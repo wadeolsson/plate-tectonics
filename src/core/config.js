@@ -230,7 +230,14 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     erosionEnabled: true,
     pelagicRate: 0.0022,     // km/Myr of pelagic rain on the abyssal plain
     shelfSedimentRate: 0.055,// km/Myr extra in shallow water near land
-    sedimentFelsic: 0.45,    // continental character of sedimentary rock
+    // Pelagic and terrigenous sediment are not the same material and must not
+    // share a composition. Deep-ocean clay and biogenic ooze are not felsic
+    // granitic debris; shelf sediment largely IS, being eroded continent. With
+    // one value at 0.45 the whole sea floor slowly acquired continental
+    // character, which then either subducted -- carrying assigned continental
+    // content out of the model -- or diluted real margins down toward 0.45.
+    pelagicFelsic: 0.15,     // deep-ocean clay and ooze
+    shelfFelsic: 0.58,       // terrigenous debris off the continents
     // Pelagic sediment reaches ~0.5 km over a few hundred Myr, which is
     // correct, so a 0.35 km cutoff made the entire sea floor read as cover and
     // the map a single colour. The threshold has to sit above the ordinary
@@ -239,6 +246,8 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     erosionRate: 0.030,      // km/Myr per km of relief above sea level
     erosionMaxStrip: 0.28,   // km/Myr ceiling, so a new orogen is not shaved flat
     erosionRange: 3.0,       // in units of spacing, how far debris travels
+    erosionInterval: 3,      // steps between erosion passes; rate scales to match
+    metamorphismInterval: 4, // steps between metamorphic passes
 
     // --- metamorphism -------------------------------------------------------
     metamorphismEnabled: true,

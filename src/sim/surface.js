@@ -27,9 +27,19 @@ import { MAX_LAYERS } from '../core/pointsets.js';
 
 export function surfaceProcesses(world) {
   const { cfg } = world;
+  // Erosion and metamorphism are slow: a mountain range takes a hundred Myr to
+  // strip and rock does not change facies on a 1 Myr timescale. Running them
+  // every step costs real time for granularity nobody can observe, so they run
+  // on an interval with the rate scaled up to match -- the same total mass
+  // transfer and the same reactions, a fraction of the work. Deposition runs
+  // every step because it is cheap and wants to accumulate smoothly.
   if (cfg.sedimentEnabled) deposition(world);
-  if (cfg.erosionEnabled) erosion(world);
-  if (cfg.metamorphismEnabled) metamorphism(world);
+  if (cfg.erosionEnabled && world.stepCount % cfg.erosionInterval === 0) {
+    erosion(world, cfg.erosionInterval * cfg.dt);
+  }
+  if (cfg.metamorphismEnabled && world.stepCount % cfg.metamorphismInterval === 0) {
+    metamorphism(world);
+  }
 }
 
 // Cook every column against its own geotherm. The gradient comes from the same
@@ -67,10 +77,14 @@ function deposition(world) {
     // Shallow water close to land is where almost all of it accumulates; the
     // abyssal plain gets a slow pelagic rain and little else.
     const shelf = depth < 3 ? 1 - depth / 3 : 0;
-    const rate = cfg.pelagicRate + cfg.shelfSedimentRate * shelf * shelf;
-    const h = rate * dt;
+    const pelagic = cfg.pelagicRate;
+    const terrig = cfg.shelfSedimentRate * shelf * shelf;
+    const h = (pelagic + terrig) * dt;
     if (h <= 1e-5) continue;
-    pushTop(crust, i, h, ROCK.SEDIMENT, cfg.sedimentFelsic, world.t);
+    // Composition follows the mix of the two sources, not a single constant.
+    const felsic = (pelagic * cfg.pelagicFelsic + terrig * cfg.shelfFelsic)
+                 / Math.max(1e-12, pelagic + terrig);
+    pushTop(crust, i, h, ROCK.SEDIMENT, felsic, world.t);
     made += h * pointArea;
   }
   world.budget.created += made;
@@ -78,9 +92,8 @@ function deposition(world) {
 }
 
 // --- erosion as a conservative mass transfer ------------------------------
-function erosion(world) {
+function erosion(world, dt) {
   const { cfg, crust, crustHash, pointArea } = world;
-  const dt = cfg.dt;
   const sc = world.scratch;
   if (!sc.elev || sc.elev.length < crust.capacity) sc.elev = new Float32Array(crust.capacity);
   const elev = sc.elev;
@@ -118,6 +131,7 @@ function erosion(world) {
     });
 
     const vol = strip * pointArea;
+    const srcFelsic = crust.continental[i];
     const before = crust.thickness[i];
     scaleColumn(crust, i, (before - strip) / before);
     moved += vol;
@@ -126,7 +140,10 @@ function erosion(world) {
     for (let k = 0; k < idx.length; k++) {
       const share = (wts[k] / wsum) * strip;
       if (share <= 1e-6) continue;
-      pushTop(crust, idx[k], share, ROCK.SEDIMENT, cfg.sedimentFelsic, world.t);
+      // Eroded debris carries the composition of the rock it came off, rather
+      // than being assigned a generic one: stripping a granite highland should
+      // deposit felsic sediment, stripping a basalt island should not.
+      pushTop(crust, idx[k], share, ROCK.SEDIMENT, srcFelsic, world.t);
     }
   }
 
