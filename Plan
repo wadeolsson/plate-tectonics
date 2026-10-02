@@ -1,0 +1,553 @@
+2D Plate Tectonics Simulator — Build Spec
+Sep 20, 2026 · @Wade
+Scope and design philosophy
+Build a 2D plate tectonics simulator on a torus (flat map, wraparound in both x and y). The goal is a map that evolves over hundreds of millions of years and produces recognizable tectonic geography — continents, ocean basins, mid-ocean ridge/transform staircases, fracture zones, trenches with volcanic arcs, collisional orogens, rift valleys — none of which are drawn directly. All of it emerges from plate motion plus boundary rules plus a physical elevation model.
+Three non-negotiable principles
+1. Crust lives on Lagrangian points, not a grid. The simulation state is a point cloud that moves with the plates. A grid is produced each frame for display only. Storing crust on a fixed grid and advecting it resamples every step and blurs continents into mush within ~50 Myr of simulated time. This is the most common way these projects fail.
+2. Elevation is derived, never painted. Height is a pure function of crustal thickness, density, and seafloor age via isostasy and half-space cooling. Nothing in the codebase should assign an elevation directly. Get this right and mountain roots, shelf breaks, ridge topography, and post-orogenic rebound all appear for free.
+3. Plates must be able to break and merge. A simulator that only moves a fixed set of plates produces a world frozen in one configuration, dead within a few hundred Myr. Rifting (splitting a plate) and suturing (welding two on continental collision) are what generate Wilson cycles. Core requirements, not polish.
+Explicitly out of scope for v1
+• Erosion and sedimentation. Deliberately deferred. Do not add a stream-power or thermal erosion pass. Design the elevation model so erosion can later be added as a mass-transfer step feeding back into isostasy, but do not implement it now.
+• Spherical geometry, map projections, Euler poles. The domain is a flat torus.
+• Climate, hydrology, rivers, biomes.
+• Mantle convection. Plate motions are prescribed and perturbed heuristically, not solved for.
+• Second-order ridge segmentation (overlapping spreading centers, non-transform offsets at tens-of-km scale). First-order ridge/transform segmentation only.
+Target scale
+Domain roughly 40,000 × 20,000 km. Point spacing 25–50 km, giving on the order of 50k–200k crust points. Timestep 1 Myr. Should run interactively in a browser on CPU; structure the hot loops (neighbor search, splatting) so they could move to GPU later without restructuring the data model.
+Data model
+Use structure-of-arrays (typed arrays), not arrays of objects. Point counts are large and the hot loops are numeric.
+CrustPoint
+The primary simulation state.
+field
+type
+notes
+x, y
+f32
+position in km, always within [0,W) × [0,H)
+plate
+u16
+owning plate index
+continental
+f32
+0 = pure oceanic, 1 = pure continental. A fraction, not a bool — accretion and collision mix crust
+thickness
+f32
+km. Oceanic ~7, continental 30–40, orogenic root up to ~70
+age
+f32
+Myr since formation. Only meaningful for oceanic crust; drives seafloor depth
+segment
+u32
+ID of the ridge segment that created this point. Never reassigned. Drives fracture zones
+weakness
+f32
+0–1 inherited structural weakness. Raised by deformation, decays slowly
+alive
+u8
+free-list flag; points are created and destroyed constantly
+Keep a free list rather than splicing arrays. Every step creates points at divergent boundaries and destroys them at convergent ones, so churn is high and steady.
+SlabPoint
+Subducted crust. A second, separate point set — this is what lets plates exist beneath other plates.
+field
+type
+notes
+x, y
+f32
+horizontal position, still advecting
+depth
+f32
+km below surface, 0 → ~660
+dip
+f32
+current dip angle in radians
+age_at_sub
+f32
+crust age when it subducted. Controls density, sink rate, dip
+continental
+f32
+carried over; buoyant continental material resists sinking
+parent_plate
+u16
+the downgoing plate it came from
+coupling
+f32
+0–1, how much it still moves with its parent plate. Decays with depth
+Plate
+field
+notes
+id
+stable, never reused
+vx, vy
+linear velocity, km/Myr
+omega
+angular velocity about the plate's own centroid, rad/Myr
+cx, cy
+centroid, recomputed each step with a circular mean (see torus section)
+area, continental_area
+used for rift-nucleation heuristics
+parent
+ID of the plate this split from, for history/debugging
+Fault
+An extracted boundary object, rebuilt from the Voronoi dual each step but with stable IDs carried forward by matching.
+field
+notes
+polyline
+ordered list of Voronoi vertices
+plate_a, plate_b
+the two plates it separates
+obliquity[]
+per-edge, radians. 0 = pure convergence, π/2 = transform, π = pure divergence
+rate[]
+per-edge relative velocity magnitude, km/Myr
+kind[]
+derived symbol class: ridge, trench, transform, rift, suture
+RidgeSegment
+Persistent across steps. Do not rebuild from scratch — this is the object that gives ridges memory.
+field
+notes
+id
+stamped onto every crust point it creates
+p0, p1
+endpoints of the spreading axis
+spreading_dir
+unit vector
+rate
+full spreading rate, km/Myr
+birth, death
+simulation time, for fracture-zone bookkeeping
+Global
+World dimensions W, H; current time t in Myr; dt = 1 Myr; sea level; a spatial hash over crust points and a second over slab points; the Delaunay triangulation of the crust points, rebuilt each step.
+Torus mechanics
+The domain wraps in both axes. Every distance and every difference vector must go through a wrap function. No exceptions. A single unwrapped dx in the neighbor search produces phantom interactions across the map that are painful to diagnose, because the simulation keeps running and quietly produces wrong geography.
+function wrapDelta(d, L) {
+  if (d >  L * 0.5) d -= L;
+  if (d < -L * 0.5) d += L;
+  return d;
+}
+function wrapPos(p, L) {
+  p %= L;
+  return p < 0 ? p + L : p;
+}
+function dist2(ax, ay, bx, by) {
+  const dx = wrapDelta(bx - ax, W), dy = wrapDelta(by - ay, H);
+  return dx*dx + dy*dy;
+}
+Enforce this structurally: never subtract raw coordinates anywhere in the codebase. Route everything through wrapDelta.
+Circular means
+A plain arithmetic average of coordinates is wrong on a torus. A plate straddling the seam gets a centroid on the opposite side of the map, which then corrupts its rotation. Use the circular mean per axis: map each coordinate to an angle, average the unit vectors, map back.
+function circularMean(values, L) {
+  let sx = 0, sy = 0;
+  for (const v of values) {
+    const a = (v / L) * 2 * Math.PI;
+    sx += Math.cos(a); sy += Math.sin(a);
+  }
+  let a = Math.atan2(sy, sx);
+  if (a < 0) a += 2 * Math.PI;
+  return (a / (2 * Math.PI)) * L;
+}
+This degenerates when a plate wraps the full width — the resultant vector goes to zero and the centroid is undefined. Detect low resultant magnitude and fall back to the previous step's centroid.
+Spatial hash
+Uniform grid with cell size approximately the interaction radius. Cell index wraps with modulo; the 3x3 neighborhood query wraps too. Rebuild each step — points move far enough that incremental updates are not worth the complexity.
+Delaunay on a torus
+Simplest correct approach: replicate points within one interaction radius of each edge into ghost copies on the opposite side, triangulate the padded set with a standard library, then map ghost triangles back to their originals and de-duplicate. Padding of two to three cell widths is plenty. A true periodic Delaunay implementation is more elegant but not worth writing.
+Rendering the seam
+When drawing, tile the canvas 3x3 (or at minimum draw wrapped duplicates of anything crossing an edge) so features spanning the seam appear continuous. A user panning across the seam should see no discontinuity — if they do, something in the physics is probably also wrong.
+Plate motion
+Each plate carries linear velocity plus angular velocity about its own centroid:
+vx_point = plate.vx - plate.omega * wrapDelta(y - plate.cy, H);
+vy_point = plate.vy + plate.omega * wrapDelta(x - plate.cx, W);
+Do not skip the rotation term. Without it every boundary is one type along its entire length and the map looks like a textbook cartoon. With rotation, a single boundary naturally grades from spreading at one end, through transform, to convergent at the other — which is what real boundaries do, and it is most of what makes the fault map look plausible.
+Scale constants
+quantity
+value
+timestep dt
+1 Myr
+plate speed
+10–100 km/Myr (= 1–10 cm/yr)
+angular velocity
+cap so the fastest point on a plate stays under ~150 km/Myr
+point spacing
+25–50 km
+Advection
+Forward Euler is fine at 1 Myr steps — velocities are constant within a step and there is no stiff coupling. Advect, then wrapPos. Advect slab points too, scaled by their coupling.
+Where velocities come from
+Not solved from mantle convection (out of scope). Instead:
+• Initialize each plate with a random velocity in range.
+• Each step, apply a small random walk to vx, vy, omega so configurations drift rather than freeze.
+• Apply slab pull: a plate with a lot of attached subducting slab accelerates toward its trenches. Sum over slab points with high coupling, weighted by age_at_sub (older = denser = stronger pull).
+• Apply ridge push, much weaker: a mild force away from spreading centers.
+• Damp toward zero net momentum across all plates so the whole system does not drift.
+Slab pull is worth the effort. It is the dominant driver on the real Earth, and it makes the sim self-organizing rather than purely random — plates with long subduction zones speed up, which closes the loop between boundary processes and plate kinematics.
+Boundary extraction and classification
+Do not use the naive method
+The tempting approach — flag every point whose neighbor has a different plate — produces a fuzzy band two points wide. It is not a line, it cannot be rendered cleanly, and it gives you no object to attach history to. Reject it.
+Use the Voronoi dual
+A boundary is the set of Voronoi edges separating points of different plates. Since the Delaunay triangulation is already being built, this is nearly free: for each Delaunay edge whose two endpoints belong to different plates, emit the dual Voronoi edge (the segment joining the circumcenters of the two adjacent triangles).
+The result is a genuine polyline network — one edge wide, connected, geometrically clean. Walk connected components to get faults as objects with length, endpoints, and identity.
+Stable fault IDs
+Rebuild the network each step, then match to the previous step's faults by overlap of (plate_a, plate_b) and spatial proximity of endpoints. Carry IDs forward. Without this, nothing downstream can have history.
+Classify by relative velocity
+For each boundary edge, evaluate at its midpoint. Include each plate's rotation term when computing velocities.
+const vRel = velAt(plateB, mx, my) - velAt(plateA, mx, my);  // vector
+const n = edgeNormal;   // unit, pointing from A into B
+const t = edgeTangent;  // unit, perpendicular to n
+const vn = dot(vRel, n);   // positive = opening, negative = closing
+const vt = dot(vRel, t);   // shear
+const obliquity = Math.atan2(Math.abs(vt), -vn);
+const rate = Math.hypot(vn, vt);
+Store the continuous obliquity angle. Do not bucket into three types. 0 = pure convergence, π/2 = pure transform, π = pure divergence, and everything real lives in between. Transpressional and transtensional boundaries are common and you lose them the moment you snap to categories.
+Sub-classify by what is on each side
+The obliquity gives the kinematics; the crust types on either side give the feature. Use continental fraction averaged over the points adjacent to the edge.
+obliquity
+sides
+feature
+divergent
+ocean / ocean
+mid-ocean ridge
+divergent
+cont / cont
+continental rift
+convergent
+ocean / cont
+trench + volcanic arc
+convergent
+ocean / ocean
+island arc, older plate subducts
+convergent
+cont / cont
+suture / collisional orogen
+transform
+any
+strike-slip; dextral or sinistral by sign of vt
+This classification drives both the process rules and the map symbology, so compute it once per step and cache it on the fault object.
+Ridge segmentation — the orthogonal staircase
+This is the section most likely to be implemented wrong. Read it carefully.
+Raw Voronoi boundary polylines will not produce the ridge/transform staircase on their own. They are jagged at the point-spacing scale, which is noise, not structure — wrong scale, wrong character, and no memory, because the jaggedness re-randomizes every step. The staircase has to be constructed explicitly.
+Why the staircase exists
+A spreading center can only do one thing: create crust symmetrically, perpendicular to the spreading direction. If the overall boundary trend is oblique to the spreading direction, no single continuous ridge can accommodate that motion. So the boundary decomposes into pure-mode pieces:
+• Ridge segments perpendicular to the spreading direction (pure opening)
+• Transform faults parallel to the spreading direction (pure strike-slip, nothing created or destroyed)
+The orthogonal staircase is the only decomposition in which every piece operates in a pure mode. This is good news algorithmically: the geometry is fully determined by spreading direction plus a segmentation length. You are not simulating it, you are constructing it.
+Construction
+1. Extract the raw boundary polyline from the Voronoi dual (previous section). This is your topology.
+2. Rotate into the spreading frame: let x̂ = spreading direction, ŷ = perpendicular. In this frame, ridge segments are vertical and transforms are horizontal.
+3. Staircase-approximate the boundary trace in that frame: vertical runs of length L_seg, horizontal jogs to track the original trace. Structurally this is Bresenham. The more oblique the boundary over a stretch, the longer the jogs come out — which is correct, and is exactly how real transform offsets scale with obliquity.
+4. Rotate back. Store as RidgeSegment objects with stable IDs.
+L_seg is the main realism knob
+Key it off spreading rate:
+spreading rate
+segment length
+character
+fast (~150 km/Myr)
+long, ~200–400 km
+smooth, small offsets — East Pacific Rise style
+slow (~20 km/Myr)
+short, ~50–150 km
+big transform offsets — Mid-Atlantic Ridge style
+Persist the segments
+Let segments evolve slowly — lengthen, shorten, propagate, occasionally die or split — but never re-derive from scratch each step. Persistence is the entire point. A transform that exists for only one timestep leaves no trace, and the fracture-zone machinery in a later section depends on segments having continuous identity.
+Same algorithm for continental rifts
+Oblique continental rifting performs the identical decomposition: rift segments linked by transfer zones (also called accommodation zones). Same geometry, different vocabulary. Write the routine once and parameterize by crust type. The East African Rift is the reference for what the output should look like.
+Boundary process rules
+Applied each step after classification. These are the rules that turn kinematics into geology.
+Divergent — accretion
+Where plates separate, a gap opens in the point cloud. Detect gaps as regions where the local point density has dropped below threshold, or more simply by walking each active ridge segment and seeding along it.
+Seed new crust points on both sides of the spreading axis, symmetrically:
+• continental = 0
+• thickness = 7 km
+• age = 0
+• segment = the ID of the ridge segment that created it — stamp this, it drives fracture zones
+• weakness = low
+Ridge topography is not drawn. It emerges from the age-depth relation in the elevation model.
+Convergent — subduction
+Where point clouds from two plates overlap, decide who goes down:
+configuration
+rule
+ocean vs continent
+ocean subducts, always
+ocean vs ocean
+the older crust subducts (colder, denser)
+continent vs continent
+neither — see collision below
+For each subducting point:
+1. Remove it from the crust layer.
+2. Create a SlabPoint at that location with depth = 0, age_at_sub = its crust age, coupling = 1. Do not simply delete it — the slab layer is a core feature.
+3. Transfer a fraction of its thickness to the nearest overriding-plate points as an accretionary wedge. Falls off with distance from the trench.
+4. Raise weakness on the overriding points.
+Volcanic arc
+Place an arc on the overriding plate at a distance inland from the trench determined by slab dip — where the slab reaches roughly 100 km depth. For a typical ~45° dip this is ~150 km inland; for a shallow slab it can be many hundreds. Query the slab layer for this rather than hardcoding a distance — that is what makes flat-slab arc migration work.
+Arc effect: add thickness, bump continental fraction upward (arcs manufacture continental crust), raise weakness.
+Continental collision — suture
+When two continental blocks converge, neither subducts. Instead:
+1. Thicken crust on both sides of the boundary, falling off with distance. Peak thickness up to ~70 km.
+2. Raise weakness strongly along the collision zone.
+3. Merge the two plates into one. Reassign plate on all points of the smaller plate, retire its ID, recompute centroid and velocity from momentum-weighted averages.
+Step 3 is mandatory. Suturing is half of what generates supercontinent assembly.
+Transform
+No crust created or destroyed. Two effects worth having:
+• Raise weakness along the fault trace.
+• Apply small local transpression or transtension where the fault is not perfectly parallel to the relative motion — slight thickening at restraining bends, thinning at releasing bends. This is what produces pull-apart basins and small pop-up ranges, and it is cheap.
+The slab layer
+Subducted crust persists as a second point set. This is what lets plate material exist beneath other plates, and it is where the most interesting emergent behavior comes from.
+Per-step slab update
+For each slab point:
+depth += sinkRate(age_at_sub, continental) * dt
+dip   += dipEvolution(...)
+x, y  += parentPlateVelocity * coupling * dt
+coupling *= decay          // weaker grip as it descends
+retire when depth > 660 km
+Older, colder crust sinks faster and steeper. Buoyant continental material resists sinking — if continental is high, sink rate drops sharply, which is the mechanism behind collision-zone slab behavior.
+Querying from the crust layer
+For each crust point, spatial-hash lookup into the slab set for slabs beneath it. Retrieve slab_depth, d(depth)/dt, and local slab density. The feedback rules then write themselves — and they give you the two behaviors that matter most.
+Flat-slab subduction
+Trigger: young buoyant downgoing crust, fast convergence, or a subducted ridge or oceanic plateau.
+Effect: dip flattens; the slab scrapes along the base of the overriding plate for hundreds of km inland; arc volcanism shuts off at the normal arc position and migrates far inland; compression is transmitted well away from the trench, producing thick-skinned basement uplift.
+This is the Laramide orogeny. If the sim produces it, the slab layer is working.
+Slab rollback
+Trigger: slab sinks faster than the plates converge, so the trench hinge retreats oceanward.
+Effect: the overriding plate goes into extension. Thin the crust there; Airy isostasy drops the elevation with no special-casing, producing basins and ranges, metamorphic core complexes, and back-arc spreading.
+Flat slab and rollback are the two primary validation targets for this layer — both are checkable against well-documented real-world examples rather than against a paper figure.
+Slab windows
+When a spreading ridge is subducted, or a slab detaches (breakoff), leave a gap in the slab field. Where a crust point queries the slab layer and finds a hole where there should be slab, apply: rapid uplift plus anomalous volcanism in a place with no arc.
+A few lines once the layer exists, and it produces geological weirdness that looks motivated rather than noisy.
+Stretching applied upward
+Generalizing the rollback case: the slab layer can apply stress to the crustal plates above it — compression where the slab is strongly coupled and shallow, extension where it is rolling back or absent. Express this as a thickness modification on the overriding crust points, then let isostasy convert it to topography. Do not modify elevation directly.
+Elevation model
+Two formulas. Together they account for essentially all first-order topography.
+Airy isostasy — anything with continental character
+const RHO_CRUST_CONT = 2700;   // kg/m^3
+const RHO_CRUST_OCEAN = 2900;
+const RHO_MANTLE = 3300;
+const DATUM = 6.0;             // km, tuned so sea level lands sensibly
+
+const rho = mix(RHO_CRUST_OCEAN, RHO_CRUST_CONT, continental);
+const elev = thickness * (1 - rho / RHO_MANTLE) - DATUM;
+Sanity check the constants:
+crust
+thickness
+result
+normal continental
+35 km
+~ +0.4 km
+orogenic root
+70 km
+~ +6.7 km
+thinned rift crust
+20 km
+~ −2.4 km
+Mountain roots, rift basins, and post-thickening rebound all fall out of this one line.
+Half-space cooling — oceanic crust
+function oceanDepth(ageMyr) {
+  if (ageMyr < 80) return 2600 + 345 * Math.sqrt(ageMyr);   // meters
+  return 5700 - (5700 - 2600 - 345 * Math.sqrt(80)) * 0;    // flattens ~5700 m
+}
+Ridge crest ~2.6 km deep, 80 Myr crust ~5.7 km, flattening thereafter. Implement the flattening as a smooth asymptote rather than a hard cutoff.
+This single function gives you mid-ocean ridge topography, abyssal plains, and the age-depth asymmetry across ridges — none of which need to be drawn.
+Blending
+For mixed crust, interpolate between the isostatic and cooling results by continental fraction. The transition zone is your continental shelf and slope, so make the blend smooth — a hard switch produces a visible cliff at every coastline.
+Sea level
+A global constant, but consider making it dynamic: total ocean water is fixed, so when a lot of young (shallow) seafloor exists, ocean basins hold less water and sea level rises, flooding continental margins. This is the mechanism behind the great Cretaceous epicontinental seas. Cheap to add — compute basin volume from the current bathymetry, solve for the level that holds the fixed water volume.
+Hard rule
+No code path assigns elevation directly. If something needs to be higher, it gets thicker or younger. Grep for direct elevation writes during review; every one is a bug.
+Fracture zones and inherited weakness
+Two small features with outsized payoff. Both depend on persistence from earlier sections.
+Fracture zones fall out for free
+Every crust point is stamped with the segment ID that created it. A transform fault is only active between the two offset ridge tips; once crust advects past the tip, both sides belong to the same plate moving together. The fault is dead — but the scar is not.
+Across that scar sits crust of two different ages, because it was created at two ridge segments offset in time. The half-space cooling formula already converts age to depth. So the bathymetric step along every fracture zone renders itself, with no additional code.
+Those long parallel scars combing across the ocean floor are the most recognizable feature of real seafloor maps, and they emerge purely as a consequence of the segment stamping and the age-depth relation. Nothing needs to be drawn.
+To render them explicitly as lines, detect them as loci where the segment ID changes discontinuously between adjacent points and the age difference exceeds a threshold.
+Inherited weakness
+Give each crust point a weakness scalar:
+• Raised wherever deformation happens: collision zones, rift axes, transform traces, arcs, fracture zones.
+• Decays slowly — a half-life on the order of 200 Myr.
+• Biases rift nucleation: when choosing where to split a plate, strongly prefer high-weakness lines.
+The consequence: new rifts preferentially reopen old sutures. This is why the Atlantic opened roughly along the Appalachian–Caledonian suture, and why old orogenic belts keep getting reactivated.
+About twenty lines of code. It is the difference between map histories that feel like they have memory and ones that look randomly regenerated each cycle. Implement it — it is one of the highest value-to-effort features in the whole spec.
+Plate reorganization
+Without this the world is dead after a few hundred Myr. Treat it as core, not polish.
+Rifting — splitting a plate
+When to trigger. Score each plate each step for rift likelihood:
+• Large continental area (big plates insulate the mantle beneath them and go into extension)
+• Time since last reorganization
+• Net tensile stress from boundary conditions — divergent or rolling-back boundaries on opposite sides
+• Presence of high-weakness lineaments crossing the plate
+Where to put the rift. Trace a path across the plate that preferentially follows high-weakness points. A least-cost path with cost inversely proportional to weakness works well, and it is what makes rifts reopen old sutures rather than cutting randomly across cratons.
+What happens.
+1. Assign points on each side of the path to a new plate ID.
+2. Give the two plates diverging velocities perpendicular to the rift axis, plus a small differential rotation so the rift opens like a zipper rather than uniformly. Real rifts propagate.
+3. Thin the crust along the axis — this immediately drops elevation via isostasy, producing a rift valley before any ocean exists.
+4. Once thinning passes a threshold, begin seafloor spreading: create a ridge segment set along the axis using the staircase construction and start accreting oceanic crust.
+Stages 3 and 4 give you the East African Rift → Red Sea → Atlantic progression as a continuous process rather than as discrete states.
+Suturing — merging plates
+Covered in the boundary rules, restated here because it is the counterpart: when continental crust collides with continental crust, weld the plates into one. Reassign point ownership, retire the absorbed plate ID, recompute centroid and velocity.
+The Wilson cycle
+Rifting plus suturing plus weakness inheritance produce supercontinent assembly and dispersal without any code that knows what a supercontinent is. Expect a cycle length on the order of 300–500 Myr if the tuning is reasonable.
+This is the primary whole-system validation target. If you run 2 Gyr and see continents repeatedly gather and disperse, with new oceans opening along old collision belts, the simulation is working. If you see a permanent blob or permanently scattered fragments, the rift/suture balance needs tuning — usually the rift trigger threshold or the weakness decay rate.
+Rasterization and rendering
+Splat, do not nearest-neighbor
+For each crust point, write a Gaussian-weighted contribution into an accumulation buffer over a radius of roughly 2–3× point spacing, accumulating weight separately, then divide at the end.
+for each point p:
+  for each cell c within radius:
+    w = exp(-d2 / (2 * sigma^2))
+    field[c] += w * p.value
+    wsum[c]  += w
+field[c] /= wsum[c]
+Cheap, parallel, smooth, and wraps trivially if the buffer is wrap-indexed. If moving to WebGL later, jump flooding gives the same result plus a distance field in a few passes.
+Field ordering — important
+Rasterize the raw fields (thickness, age, continental), then compute elevation from the rasterized fields. Not the reverse.
+Thickness and age interpolate sensibly. Elevation is a nonlinear function of them, so interpolating elevation directly smears shelf breaks and ridge crests into mush.
+The same pass gives you a distance-to-boundary field, used downstream for arc placement, wedge accretion falloff, and rift shoulder uplift.
+Map layers
+Make these independently toggleable:
+layer
+content
+elevation
+hypsometric tint, sharp break at sea level
+crust type
+continental / oceanic fraction
+seafloor age
+the classic rainbow age map — best single check that spreading works
+faults
+classified boundary network
+slabs
+subducted material below, as a depth-shaded underlay
+weakness
+inherited structure, to confirm rifts follow old scars
+stress
+convergence/extension derived from slab coupling
+Fault symbology
+Use real geologic symbols. It costs almost nothing and makes the map read instantly:
+• Trenches — barbed teeth on the overriding side
+• Ridges — double line with offset transform segments
+• Normal faults / rifts — ticks on the hanging wall
+• Strike-slip — paired arrows showing sense of motion
+Obliquity colormap
+For the raw (pre-segmentation) boundary network, use a 2D colormap: hue from obliquity, line width from rate. That single choice is most of the difference between a map that looks like a textbook diagram and one that looks like an actual tectonic map.
+After ridge segmentation each piece is near-pure (≈0 or ≈π/2), so the segmented view simplifies — but keep the continuous obliquity value regardless, because oblique rifts and transpressional boundaries are real and should not be snapped to two categories.
+Time controls
+Play/pause, step-by-step, speed control, and a scrub bar over saved snapshots. Snapshot the full state every N steps so history can be replayed — this is essential for understanding why a feature formed, and you will want it constantly during tuning.
+Cross-section view
+Build this early. It is the primary debugging tool, not a later feature.
+Why early
+Slab dips will be wrong at first, and a map view will never reveal it. A cross-section shows a Wadati–Benioff zone that is either plausible or obviously broken in about one second. Same for crustal roots, thinning under rifts, and wedge geometry — all invisible from above, all immediately legible in section.
+Implementation
+Once there are two point layers this is nearly free:
+1. User draws a line on the map (handle torus wrapping — the line may cross the seam).
+2. Collect all crust and slab points within a corridor of half-width w (say 50–100 km) of the line.
+3. Project each onto the line: s = distance along, and the point's depth.
+4. Plot s on the horizontal axis, depth on the vertical, with vertical exaggeration as an adjustable control.
+What to draw
+• Crust as a band from elevation down to elevation − thickness, colored by continental fraction
+• Mantle below, as background fill
+• Slab points as their own dipping cloud, colored by age_at_sub or by coupling
+• Sea level as a reference line
+• Optional: the Moho as an explicit line at the base of the crust
+Checks it makes immediate
+section shows
+tells you
+slab dipping ~30–60°, continuous to depth
+normal subduction is working
+slab nearly horizontal under a wide region
+flat-slab mode engaged
+crustal root beneath a mountain belt
+isostasy is being applied correctly
+thinned crust with a slab absent or retreating
+rollback extension
+a gap in the slab cloud
+slab window
+Add a preset that draws the section perpendicular to the nearest trench, since that is the orientation you will want nine times out of ten.
+Build order and validation
+Build in this order. Each milestone should be visually verifiable before moving on — do not build the whole pipeline and then debug it.
+#
+milestone
+verifiable when
+1
+Torus domain, point cloud, plates, advection
+points move and wrap with no seam artifacts
+2
+Delaunay + Voronoi boundary extraction
+clean one-edge-wide boundary polylines
+3
+Obliquity classification + 2D colormap
+boundaries grade convergent → transform → divergent along their length
+4
+Splat rasterizer + isostasy + cooling
+recognizable continents and ocean basins
+5
+Cross-section view
+can inspect crustal thickness in section
+6
+Accretion + subduction (crust layer only)
+ridges spread, trenches consume
+7
+Slab layer + Wadati–Benioff in section
+slabs dip plausibly and retire at depth
+8
+Flat-slab and rollback feedbacks
+arc migrates inland; back-arc extension appears
+9
+Ridge segmentation staircase
+orthogonal ridge/transform geometry on the map
+10
+Fracture zones + weakness
+age-offset scars; rifts follow old sutures
+11
+Rifting + suturing
+plate count changes over time
+12
+Long-run tuning
+Wilson cycles emerge
+Validation targets
+Check against these rather than against aesthetics. All are well-documented real-world cases.
+Seafloor age map. Should look like the real one: symmetric stripes about ridges, offset across fracture zones, oldest crust adjacent to trenches. This is the single best diagnostic — if spreading and subduction are both right, it looks right immediately.
+Ridge geometry. Orthogonal staircase. Fast ridges smooth with small offsets; slow ridges with large transform offsets.
+Flat-slab. Should produce inland arc migration and basement uplift far from the trench (Laramide).
+Rollback. Should produce back-arc extension, thinned crust, low elevation (Basin and Range).
+Collision. Thick crustal root, high plateau, plate merge, and a persistent weakness lineament afterward.
+Wilson cycle. Over 2 Gyr, continents gather and disperse, with new oceans preferentially opening along old sutures.
+Reference reading for the implementer
+• Cortial, Peytavie, Galin & Guérin (2019), Procedural Tectonic Planets, Computer Graphics Forum 38(2). Free PDF via LIRIS. Deliberately approximates subduction and collision procedurally rather than physically — the right tradeoff for this project. Note that it works on a sphere; adapt to the torus.
+• Lauri Viitanen, platec — C++ library doing point-based 2D plate tectonics. Reading its source will save significant flailing on collision bookkeeping.
+Notes on tuning
+Expect most of the time to go into tuning, not implementation. Build the snapshot/replay system early, expose the constants as live sliders, and keep a seed so runs are reproducible. Parameters most worth exposing: L_seg, weakness decay half-life, rift trigger threshold, slab sink rate, wedge transfer fraction, and the isostatic DATUM.
+
+Addendum — Review Revisions
+
+An external review of this spec was incorporated. Changes below supersede the corresponding sections above.
+
+Fix before implementation
+
+Plate rotation → unwrapped coordinates. Rigid rotation is not globally well-defined on a flat torus. Give each plate an unwrapped local frame; each point carries (ux, uy) alongside its wrapped render position, and rotation is computed from the unwrapped offsets. Two cases the fix must handle: re-establish a point's unwrapped frame whenever it changes plate (subduction, rifting, suturing reassign ownership constantly), and force omega = 0 for any plate whose unwrapped extent exceeds W or H, where rotation is genuinely undefined.
+
+Trench/hinge as an explicit kinematic state. Rollback must not be inferred by comparing sink rate to convergence rate. Add trench_position, trench_velocity, hinge_position, and rollback_rate to subduction-zone state. Rollback is then driven by slab negative buoyancy, dip, length, convergence, and trench anchoring — heuristically, no mantle model needed.
+
+Ocean-depth flattening. The * 0 term in oceanDepth() is a bug. Replace with a blend that keeps sqrt behavior where it is valid and flattens smoothly:
+
+js
+const w = smoothstep(70, 110, t);
+return (1 - w) * (2600 + 345 * Math.sqrt(t)) + w * DMAX;  // DMAX ≈ 5700–6000
+
+Do not substitute a pure exponential — it is linear in age at small t and discards the sqrt relation, which is the well-established part. Relabel the section empirical age–bathymetry model, not half-space cooling.
+
+Lithosphere as a distinct layer. Promoted from "recommended" to required — several processes in this spec (slab buoyancy, bending resistance, transform persistence, rollback, subduction initiation) are lithospheric, not crustal. Note that L ≈ k·sqrt(age) applies to oceanic lithosphere only; continental needs a separate rule, since cratonic roots exceed 200 km at ages in the billions. This also removes the hidden work currently done by the isostatic DATUM, and gives rifts a reason to route around old shields.
+
+Ocean–ocean subduction polarity: probabilistic, with hysteresis. Score by age, boundary weakness, convergence, and a small random term rather than strict "older subducts." Critically: establish polarity once at subduction initiation and lock it, re-evaluating only on major reorganization. Re-scoring every step causes boundaries to flip between steps and corrupts the slab layer.
+
+Mass conservation diagnostics. Track total crustal mass, total slab mass, and water volume; display conservation error. Accretionary wedge transfer must conserve mass explicitly.
+
+Also adopted
+Arc placement: treat ~100 km slab depth as a target with local variation, not a threshold test. Real arcs span roughly 65–130 km.
+Triple junctions: detect as Voronoi vertices where three plate IDs meet; classify (RRR, RTF, TTT, etc.) and render. Nearly free, and the best available plate-topology debugger.
+Earthquakes as diagnostic only: generate events from boundary stress × slip rate × weakness × fault type; render as dots. In cross-section this yields a Wadati–Benioff zone, which directly validates slab geometry.
+Rifting driven by stress first, weakness second — not by continental area alone, which would make the largest continent rift simply for being large.
+Segment length: modulate L_seg by inherited weakness and noise rather than a pure function of spreading rate. (Note: magma supply is not a state variable in this model; omit that term in v1.)
+Slab identity: add slab_id and distance_along_slab so slab pull integrates over a coherent slab rather than summing independent points.
+Rejected or modified
+Segment-length/spreading-rate table stands as written. Fast-spreading ridges do have longer segments and smaller offsets; slow-spreading have shorter segments with large transform offsets. The review's heading claimed this was inverted; its own body text agrees with the table.
+Staircase decomposition: wording softened only. The orthogonal staircase is the unique pure-mode decomposition; nature simply does not always adopt pure modes. This is a one-sentence clarification, not a change in approach.
+Atlantic/Appalachian–Caledonian example retained as illustration. The algorithm was already general; no rule depended on the specific case.
+Newly identified — not in either document
+
+Point density management. Rifting stretches the point cloud and collision compresses it. Over a few hundred Myr, spacing drifts badly: gaps in extended crust, pileups in orogens. Requires point insertion and merging to maintain target spacing, while conserving mass. This is the most likely cause of a long run degrading quietly, and it is coupled to the mass diagnostics above.
+
+Performance ceiling. Rebuilding Delaunay over 200k points per step in JS is likely the practical wall and was never costed. Benchmark before committing to the upper end of the point-count range; plan for incremental retriangulation if it fails.

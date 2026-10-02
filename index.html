@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2D Plate Tectonics Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="map"></canvas>
+    <div id="hud">
+      <div id="clock">0 Myr</div>
+      <div id="readout">—</div>
+    </div>
+    <div id="legend"></div>
+    <div id="maphint">drag&nbsp;pan · wheel&nbsp;zoom · shift+drag&nbsp;or&nbsp;S&nbsp;to&nbsp;cut&nbsp;a&nbsp;section · drag&nbsp;A/A′&nbsp;handles · T&nbsp;trench&nbsp;section · click&nbsp;inspect</div>
+    <div id="sectionwrap">
+      <canvas id="section"></canvas>
+      <div id="sectionbar">
+        <button id="secDraw" title="click two points on the map to cut a section">✎ draw section</button>
+        <button id="secT" title="section perpendicular to the nearest trench">⟂ trench-normal</button>
+        <button id="secClear" title="remove the section line">clear</button>
+        <label>half-width <input type="range" id="secW" min="20" max="300" step="5" value="75"><span id="secWv">75 km</span></label>
+        <label>vert. exag <input type="range" id="secV" min="4" max="80" step="1" value="26"><span id="secVv">26×</span></label>
+        <label><input type="checkbox" id="secS" checked> slabs</label>
+        <label><input type="checkbox" id="secQ" checked> quakes</label>
+        <label><input type="checkbox" id="secM" checked> horizons</label>
+        <label><input type="checkbox" id="secL" checked> labels</label>
+        <label>colour <select id="secC"><option value="rock">rock type</option><option value="crust">composition</option><option value="plate">plate</option></select></label>
+      </div>
+    </div>
+  </div>
+  <aside id="panel"></aside>
+</div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
