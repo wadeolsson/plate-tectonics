@@ -68,6 +68,7 @@ export class SectionView {
     this.showMoho = true;
     this.showSlabs = true;
     this.showLabels = true;
+    this.showMagma = true;
     this.colorBy = 'rock';             // 'rock' | 'crust' | 'plate'
     this.hover = null;                 // {sx, sy} in canvas pixels
     this.layout = null;                // set by draw(), used for hover lookup
@@ -209,6 +210,9 @@ export class SectionView {
     const votes = new Array(nCols);
     const best = new Int32Array(nCols);
     const bestW = new Float64Array(nCols);
+    const melt = new Float64Array(nCols);
+    const meltD = new Float64Array(nCols);
+    const erupt = new Float64Array(nCols);
     const span = len / nCols;
     const sigma = span * 1.1;
 
@@ -223,6 +227,9 @@ export class SectionView {
         acc[c * 5 + 2] += wt * w.crust.litho[i];
         acc[c * 5 + 3] += wt * w.crust.age[i];
         acc[c * 5 + 4] += wt * w.crust.weakness[i];
+        melt[c] += wt * w.crust.melt[i];
+        meltD[c] += wt * w.crust.melt[i] * w.crust.meltDepth[i];
+        erupt[c] += wt * w.crust.erupting[i];
         wsum[c] += wt;
         // Plate identity cannot be averaged. Weighted vote instead, so a
         // column straddling a boundary picks the side that dominates it.
@@ -251,6 +258,9 @@ export class SectionView {
         weakness: acc[c * 5 + 4] * k,
         plate,
         rep: best[c] - 1,
+        melt: melt[c] / wsum[c],
+        meltDepth: melt[c] > 1e-9 ? meltD[c] / melt[c] : 0,
+        erupting: erupt[c] / wsum[c],
       };
       cols[c].elev = elevationOf(cfg, cols[c].thickness, cols[c].continental, cols[c].litho, cols[c].age);
     }
@@ -270,6 +280,7 @@ export class SectionView {
         litho: mix('litho'), age: mix('age'), weakness: mix('weakness'), elev: mix('elev'),
         plate: f < 0.5 ? A.plate : B.plate,
         rep: f < 0.5 ? A.rep : B.rep,
+        melt: mix('melt'), meltDepth: mix('meltDepth'), erupting: mix('erupting'),
       };
     }
     return cols;
@@ -423,6 +434,7 @@ export class SectionView {
     this.drawBackground(ctx, data, yOf, sx, plotW, pad);
     if (this.showSlabs) this.drawRibbons(ctx, data, yOf, sx);
     this.drawCrust(ctx, data, yOf, sx, plotW);
+    if (this.showMagma) this.drawMagma(ctx, data, yOf, sx, plotW);
     if (this.showMoho) this.drawHorizons(ctx, data, yOf, sx);
     if (this.showQuakes) this.drawQuakes(ctx, data, yOf, sx);
     this.drawAxes(ctx, yOf, pad, plotW, width, height, len);
@@ -574,6 +586,54 @@ export class SectionView {
     if (yEnd - y > 0.6) {
       ctx.fillStyle = CM.rgb(ROCKS[w.crust.layerType[base + n - 1]].color, 1);
       ctx.fillRect(x - colW / 2, y, colW, yEnd - y);
+    }
+  }
+
+  // The magmatic system: a chamber where melt is in residence, and a conduit
+  // to the surface where it is actually erupting. Everything the chamber
+  // crystallises instead of erupting is already in the column as a pluton at
+  // that same depth -- so the sills read straight off the stratigraphy rather
+  // than needing to be drawn separately.
+  drawMagma(ctx, data, yOf, sx, plotW) {
+    const cols = data.profile;
+    const colW = plotW / cols.length;
+    const cfg = this.world.cfg;
+
+    // Chambers first, as a glow under the crust.
+    for (const q of cols) {
+      if (!q || q.melt <= cfg.meltVisibleMin) continue;
+      const x = sx(q.s);
+      const top = q.elev - Math.max(0, q.meltDepth - q.melt * 0.6);
+      const bot = q.elev - (q.meltDepth + q.melt * 0.6);
+      const y0 = yOf(top), y1 = yOf(bot);
+      const h = Math.max(2.5, y1 - y0);
+      const heat = Math.min(1, q.melt / 3);
+      const g = ctx.createLinearGradient(0, y0, 0, y0 + h);
+      g.addColorStop(0, `rgba(255,${120 + 90 * heat | 0},40,${0.25 + 0.5 * heat})`);
+      g.addColorStop(0.5, `rgba(255,${190 + 50 * heat | 0},90,${0.45 + 0.5 * heat})`);
+      g.addColorStop(1, `rgba(220,70,30,${0.2 + 0.45 * heat})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(x - colW * 1.4, y0, colW * 2.8, h);
+    }
+
+    // Conduits where magma is reaching the surface.
+    ctx.lineCap = 'round';
+    for (const q of cols) {
+      if (!q || q.erupting <= 1e-4) continue;
+      const x = sx(q.s);
+      const yTop = yOf(q.elev);
+      const yCh = yOf(q.elev - Math.max(0.5, q.meltDepth));
+      const w = Math.min(3.4, 0.7 + q.erupting * 26);
+      ctx.strokeStyle = `rgba(255,170,60,${Math.min(0.95, 0.35 + q.erupting * 24)})`;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(x, yCh); ctx.lineTo(x, yTop);
+      ctx.stroke();
+      // A small vent flare at the surface.
+      ctx.fillStyle = 'rgba(255,214,130,0.9)';
+      ctx.beginPath();
+      ctx.moveTo(x, yTop - 5); ctx.lineTo(x - 2.6, yTop + 1); ctx.lineTo(x + 2.6, yTop + 1);
+      ctx.closePath(); ctx.fill();
     }
   }
 
@@ -734,6 +794,10 @@ export class SectionView {
       }
       lines.push(`crust ${q.thickness.toFixed(1)} km  litho ${q.litho.toFixed(0)} km`);
       lines.push(`continental ${q.continental.toFixed(2)}  age ${q.age.toFixed(0)} Myr`);
+      if (q.melt > this.world.cfg.meltVisibleMin) {
+        lines.push(`magma ${q.melt.toFixed(2)} km at ${q.meltDepth.toFixed(0)} km depth`
+          + (q.erupting > 1e-4 ? `, erupting ${(q.erupting * 1000).toFixed(0)} m/Myr` : ', not erupting'));
+      }
     }
     // Name the slab under the cursor, if there is one.
     for (const rb of data.ribbons) {

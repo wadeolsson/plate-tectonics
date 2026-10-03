@@ -31,7 +31,7 @@ class Element {
 }
 const byId = new Map();
 for (const id of ['map','section','panel','clock','readout','legend','secW','secWv','secV','secVv',
-                  'secQ','secM','secS','secL','secP','secC','secT','secDraw','secClear']) {
+                  'secQ','secM','secS','secL','secP','secC','secMag','secT','secDraw','secClear']) {
   byId.set(id, new Element(id.startsWith('sec')&&id.length>4?'input':'canvas'));
 }
 byId.get('secW').value='75'; byId.get('secV').value='26';

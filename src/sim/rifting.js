@@ -1,7 +1,7 @@
 import { KIND } from './boundaries.js';
 import { wrapPos, wrapDelta } from '../core/torus.js';
 import { smoothstep } from './elevation.js';
-import { deform } from './crustops.js';
+import { deform, stretchThin } from './crustops.js';
 import { scaleColumn } from './rocks.js';
 
 // Rifting and suturing are what generate Wilson cycles. Without them the world
@@ -446,10 +446,7 @@ export function riftThinning(world) {
     crustHash.forEachInRadius(mx, my, R, (p, d2) => {
       if (!crust.alive[p] || crust.continental[p] < 0.25) return;
       const w = Math.exp(-d2 / (2 * (R * 0.5) * (R * 0.5)));
-      const before = crust.thickness[p];
-      const after = Math.max(6, before - rate * w * dt);
-      if (before > 1e-6) scaleColumn(crust, p, after / before);
-      world.budget.destroyed += (before - crust.thickness[p]) * pointArea;
+      stretchThin(world, p, rate * w * dt, { floor: 6, range: 3.2, inner: 1.5 });
       crust.litho[p] = Math.max(20, crust.litho[p] - rate * 2.2 * w * dt);
       crust.weakness[p] = Math.min(1, crust.weakness[p] + cfg.weakRift * 0.02 * w * dt);
       deform(crust, p, Math.min(0.8, 0.30 * w * dt));

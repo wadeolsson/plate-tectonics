@@ -3,6 +3,7 @@ import { wrapPos, wrapDelta } from '../core/torus.js';
 import { smoothstep } from './elevation.js';
 import { applyThickness, deform } from './crustops.js';
 import { ROCK, rockFor, pushTop, scaleColumn, initColumn, readColumn, stackLayers } from './rocks.js';
+import { supplyMelt } from './magma.js';
 
 // ---------------------------------------------------------------------------
 // Divergent -- accretion
@@ -330,7 +331,10 @@ function slabDipFor(world, z, crust, samplePoint) {
 // continental content carried along. Whatever will not fit under the orogenic
 // cap is pushed out to a wider ring rather than discarded; only what survives
 // three passes is booked as a loss.
-export function spreadVolume(world, mx, my, R0, volume, contVolume, accept, contRef, rockType) {
+// `rInner` excludes a core region from receiving. Extension needs this: the
+// volume thinned out of a rift axis has to go somewhere, but putting it back
+// on the axis would undo the thinning. It belongs on the shoulders.
+export function spreadVolume(world, mx, my, R0, volume, contVolume, accept, contRef, rockType, rInner = 0) {
   const { cfg, crust, crustHash, pointArea } = world;
   let vol = volume, cvol = contVolume;
   // contRef biases the transfer toward crust of similar composition. Without
@@ -350,6 +354,7 @@ export function spreadVolume(world, mx, my, R0, volume, contVolume, accept, cont
     for (const strict of (ref >= 0 ? [true, false] : [false])) {
       crustHash.forEachInRadius(mx, my, R, (p, d2) => {
         if (!crust.alive[p] || !accept(p)) return;
+        if (rInner > 0 && d2 < rInner * rInner) return;
         if (crust.thickness[p] >= cfg.thickHardCap - 1e-6) return;
         if (strict && Math.abs(crust.continental[p] - ref) > 0.3) return;
         const w = Math.exp(-d2 / (2 * (R * 0.45) * (R * 0.45)));
@@ -466,9 +471,9 @@ export function volcanicArcs(world) {
     // in the middle crust. Emplacing it all on top would bury the volcanics
     // under their own plutons, which is the wrong way round -- and it is the
     // granite, not the lava, that makes this crust continental.
-    const erupt = add * cfg.arcEruptedFraction;
-    applyThickness(world, i, erupt, 0.70, ROCK.ANDESITE);
-    applyThickness(world, i, add - erupt, 0.95, ROCK.GRANITE, cfg.arcPlutonDepth);
+    // Supplied to a chamber, not emplaced on the spot. magma.js decides what
+    // erupts and what freezes, and over how long.
+    supplyMelt(world, i, add, cfg.arcMagmaContinental, cfg.arcPlutonDepth);
     crust.weakness[i] = Math.min(1, crust.weakness[i] + cfg.weakArc * 0.02 * g * dt);
     deform(crust, i, Math.min(0.9, 0.35 * g * dt));
     world.arcActivity += g;
@@ -560,7 +565,21 @@ export function collide(world) {
       for (const col of stacks) stackLayers(crust, p, col, f, cfg.thickHardCap);
       placed += (crust.thickness[p] - before) * pointArea;
     }
-    if (placed < volume) world.budget.lost += volume - placed;
+    // Whatever the thrust stack could not place -- because its receivers were
+    // already at the cap -- is pushed out over a wider area as bulk volume
+    // instead of being written off. A broad orogen has no internal gradient
+    // for gravitational spreading to work with, so without this the middle of
+    // a collision zone fills to the cap and the excess is simply discarded.
+    if (placed < volume) {
+      const rest = volume - placed;
+      const restCont = contVolume * (rest / Math.max(1e-9, volume));
+      const before2 = world.budget.lost;
+      spreadVolume(world, z.trenchX, z.trenchY, R * 2.2, rest, restCont,
+        (p) => crust.plate[p] === z.plateA || crust.plate[p] === z.plateB,
+        restCont / Math.max(1e-9, rest));
+      world.budget.lostBy.collide =
+        (world.budget.lostBy.collide || 0) + (world.budget.lost - before2);
+    }
 
     // The collision zone becomes a durable lineament, and the mantle root is
     // removed by shortening and delamination.
@@ -669,7 +688,10 @@ export function gravitationalSpreading(world) {
   const { cfg, crust, crustHash, pointArea } = world;
   if (!cfg.spreadEnabled) return;
   const dt = cfg.dt;
-  const R = world.spacing * 3.0;
+  // Wide enough to see past a plateau. Flow is downhill only, and the interior
+  // of a broad orogen has no local gradient at all, so a short reach leaves
+  // the middle of it piling up against the thickness cap.
+  const R = world.spacing * cfg.spreadRange;
   const donors = [];
   for (let i = 0; i < crust.n; i++) {
     if (!crust.alive[i]) continue;
@@ -743,8 +765,8 @@ export function hotspotVolcanism(world) {
       if (!crust.alive[p]) return;
       const w = Math.exp(-d2 / (2 * sigma * sigma)) * plume.strength;
       if (w < 0.02) return;
-      applyThickness(world, p, cfg.plumeThickening * w * dt, cfg.plumeMagmaContinental,
-        ROCK.FLOOD_BASALT);
+      supplyMelt(world, p, cfg.plumeThickening * w * dt, cfg.plumeMagmaContinental,
+        cfg.plumeChamberDepth);
       crust.litho[p] = Math.max(22, crust.litho[p] - cfg.plumeLithoThinning * w * dt);
       crust.weakness[p] = Math.min(1, crust.weakness[p] + cfg.plumeWeakening * w * dt);
       deform(crust, p, Math.min(0.5, 0.12 * w * dt));

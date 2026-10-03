@@ -87,19 +87,23 @@ export function manageDensity(world) {
     const e01 = dist2c(coords, i0, i1), e12 = dist2c(coords, i1, i2), e20 = dist2c(coords, i2, i0);
     if (Math.max(e01, e12, e20) > (4 * splitR) ** 2) continue;
 
-    const th = (crust.thickness[a] + crust.thickness[b] + crust.thickness[c]) / 3;
     const plate = plates.get(pl);
     if (!plate || !plate.alive) continue;
-    // Stretching thins: each donor gives up a third of the new point's volume.
-    const give = th / 3;
-    if (crust.thickness[a] - give < 4 || crust.thickness[b] - give < 4 || crust.thickness[c] - give < 4) continue;
-    // Stretching thins the donors' whole columns, not just a bulk number.
-    // Writing `thickness` here directly is what the column-consistency check
-    // in the validation suite exists to catch.
-    for (const d of [a, b, c]) {
-      const t0 = crust.thickness[d];
-      if (t0 > give) scaleColumn(crust, d, (t0 - give) / t0);
-    }
+
+    // Stretching thins: the three donors each give up a FRACTION OF THEIR OWN
+    // thickness and the new point receives the sum. Conservation is exact by
+    // construction and the insertion can never be refused.
+    //
+    // It used to demand that every donor have room to give a third of the mean
+    // thickness, and skip the whole triangle otherwise. Holes open precisely
+    // where crust has been stretched and thinned, so the places most in need
+    // of a new point were the ones systematically denied one: 5,700 fillable
+    // holes with only 234 insertions a step, and a point cloud stuck at 82% of
+    // nominal density.
+    const share = cfg.densityDonorShare;
+    const th = (crust.thickness[a] + crust.thickness[b] + crust.thickness[c]) * share;
+    if (th < 1.5) continue;
+    for (const d of [a, b, c]) scaleColumn(crust, d, 1 - share);
 
     const nx = ((cx % W) + W) % W, ny = ((cy % H) + H) % H;
     const i = crust.spawn({

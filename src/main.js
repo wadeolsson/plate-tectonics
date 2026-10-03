@@ -292,6 +292,7 @@ document.getElementById('secQ').onchange = (e) => { section.showQuakes = e.targe
 document.getElementById('secM').onchange = (e) => { section.showMoho = e.target.checked; dirty = true; };
 document.getElementById('secS').onchange = (e) => { section.showSlabs = e.target.checked; dirty = true; };
 document.getElementById('secL').onchange = (e) => { section.showLabels = e.target.checked; dirty = true; };
+document.getElementById('secMag').onchange = (e) => { section.showMagma = e.target.checked; dirty = true; };
 document.getElementById('secC').onchange = (e) => { section.colorBy = e.target.value; dirty = true; };
 document.getElementById('secT').onclick = () => { section.presetAcrossTrench(view.cam.x, view.cam.y); dirty = true; };
 document.getElementById('secDraw').onclick = () => { setSectionMode(!sectionMode); dirty = true; };

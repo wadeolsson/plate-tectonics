@@ -134,14 +134,24 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     // Only a small fraction of the incoming column is scraped off. At 0.28 a
     // 60 km/Myr trench builds ~0.8 km/Myr of wedge, which saturates the
     // orogenic-root cap within a few Myr and throws the overflow away.
-    subductBuoyancyLimit: 0.50,  // crust more continental than this jams the trench
+    // Continental crust does not subduct. At 0.50 anything up to half
+    // continental still went down, and because arc, wedge and sediment input
+    // steadily dilute a margin's felsic fraction, margins crossed the
+    // threshold and were consumed one row at a time -- continents eroded
+    // inward from their edges until nothing was left.
+    subductBuoyancyLimit: 0.18,  // crust more continental than this jams the trench
     jamClosureGain: 3.0,     // how fast a jammed trench counts toward suturing
     wedgeFraction: 0.06,
     wedgeRange: 4.0,         // in units of spacing
     arcThicknessRate: 0.13,  // km/Myr added at the arc
     arcMagmaContinental: 0.80,   // bulk arc magma composition
     arcEruptedFraction: 0.42,    // of arc magma that erupts; the rest intrudes
-    arcPlutonDepth: 0.55,        // fractional depth the plutons freeze at
+    arcPlutonDepth: 0.55,        // fractional depth the chamber sits at
+    plumeChamberDepth: 0.75,     // plume magma ponds deeper, near the base
+    meltEruptFrac: 0.16,         // of the chamber reaching the surface per Myr
+    meltFreezeFrac: 0.22,        // of the chamber crystallising per Myr
+    meltMax: 9.0,                // km, cap on magma held in one column
+    meltVisibleMin: 0.05,        // km below which a chamber is not drawn
     arcWidth: 1.8,           // in units of spacing
     arcSlabDepth: 105,       // km; arc target depth, not a threshold
     arcSlabDepthLo: 65,      // km; real arcs span roughly 65-130 km
@@ -171,7 +181,9 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     slabSinkBase: 12.0,      // km/Myr for zero-age oceanic crust
     slabSinkAgeGain: 0.16,   // extra km/Myr per sqrt(Myr) of age at subduction
     slabSinkContResist: 0.85,// fraction of sink rate removed at continental = 1
-    slabDipInit: 0.52,       // rad (~30 deg) at the trench
+    slabDipInit: 0.42,       // rad (~24 deg) baseline at the trench
+    slabDipAgeGain: 0.62,    // rad added for old, dense incoming lithosphere
+    slabDipDepthGain: 0.17,  // rad of steepening over the whole descent
     slabDipMax: 1.15,        // rad (~66 deg)
     slabDipRate: 0.02,       // rad/Myr steepening
     slabCouplingDecay: 0.972,// per Myr
@@ -267,6 +279,7 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     // and the overflow has nowhere to go.
     spreadThreshold: 50,     // km; flow starts above this
     spreadRate: 0.14,        // per Myr, fraction of the excess moved
+    spreadRange: 4.5,        // in units of spacing; must see past a plateau
     spreadEnabled: true,
 
     // --- point density management -----------------------------------------
@@ -275,6 +288,7 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     // gaps in extended crust, pileups in orogens.
     densityMergeFactor: 0.58,  // merge peers closer than this * spacing
     densitySplitFactor: 0.78,  // insert where a triangle's circumradius exceeds this
+    densityDonorShare: 0.25, // of its own thickness each donor gives an inserted point
     densityMaxOpsPerStep: 4000,
 
     // --- diagnostics -------------------------------------------------------

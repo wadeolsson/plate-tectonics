@@ -104,6 +104,16 @@ export class CrustSet extends SoA {
       ['segment', Uint32Array],      // ridge segment that made it; never reassigned
       ['weakness', Float32Array],    // 0-1 inherited structural weakness
 
+      // Magma in residence. Volcanism used to be instantaneous -- the slab
+      // reached arc depth and rock appeared the same step -- which left
+      // nothing to draw and made arcs switch off the moment the slab moved.
+      // A reservoir with a residence time gives chambers, dikes and a
+      // magmatic system that drains over a few Myr instead of vanishing.
+      ['melt', Float32Array],        // km of magma held in the column
+      ['meltDepth', Float32Array],   // km below the surface the chamber sits
+      ['meltFelsic', Float32Array],  // composition of that magma
+      ['erupting', Float32Array],    // km/Myr reaching the surface right now
+
       // The crustal column, top (youngest) first. `thickness` and
       // `continental` above are CACHES derived from these -- see rocks.js.
       // Each layer carries its own felsic fraction as well as a rock type, so

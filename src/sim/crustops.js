@@ -2,6 +2,32 @@
 // one. They live here rather than in whichever process happened to need them
 // first, so the process modules do not have to import each other.
 import { pushTop, scaleColumn, intrude, rockFor } from './rocks.js';
+import { spreadVolume } from './processes.js';
+
+// Thin a crust point by stretching, moving the removed volume onto the
+// surrounding crust rather than deleting it. Extension does not destroy crust:
+// rifting Pangaea thinned its margins without reducing Earth's continental
+// volume, because the same material came to occupy a larger area. In a model
+// whose points each stand for a fixed area, thinning with no matching area
+// gain is pure loss -- and over a few hundred Myr it was one of the three
+// mechanisms quietly annihilating the continents.
+export function stretchThin(world, i, amount, opts = {}) {
+  const { crust, pointArea, spacing } = world;
+  const before = crust.thickness[i];
+  const floor = opts.floor !== undefined ? opts.floor : 4;
+  const after = Math.max(floor, before - amount);
+  const removed = before - after;
+  if (removed <= 1e-6) return 0;
+  const felsic = crust.continental[i];
+  scaleColumn(crust, i, after / before);
+  const vol = removed * pointArea;
+  // Onto the shoulders, not back onto the axis.
+  spreadVolume(world, crust.x[i], crust.y[i],
+    (opts.range || 3.0) * spacing, vol, vol * felsic,
+    opts.accept || ((p) => crust.plate[p] === crust.plate[i]),
+    felsic, undefined, (opts.inner || 1.4) * spacing);
+  return removed;
+}
 
 // Thicken or thin a crust point. Thickening lays a new layer on top of the
 // column, carrying its own composition; thinning stretches the whole column

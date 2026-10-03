@@ -18,6 +18,7 @@ import { MantleField } from '../sim/mantle.js';
 import { lithoTarget, updateLithosphere, smoothstep } from '../sim/elevation.js';
 import { initColumn } from '../sim/rocks.js';
 import { surfaceProcesses } from '../sim/surface.js';
+import { magmatism, meltVolume } from '../sim/magma.js';
 
 export class World {
   constructor(cfg = makeConfig()) {
@@ -53,6 +54,7 @@ export class World {
     this.faultPending = new Map();
     this.riftHistory = [];
     this.kinematics = [];
+    this.contDelta = {};
     this.stress = new Map();
     this.arcActivity = 0;
     this.plumeActivity = 0;
@@ -162,7 +164,19 @@ export class World {
   step() {
     const cfg = this.cfg;
     const T = this.timings;
-    const mark = (k, fn) => { const a = performance.now(); this.stage = k; fn(); T[k] = performance.now() - a; };
+    // Optional per-stage accounting of continental volume. Counting killed
+    // points is misleading -- jamTrench and the density merge both destroy
+    // points while conserving their volume elsewhere -- so the only honest
+    // measure is the change in total continental volume ACROSS each stage.
+    const mark = this.trackContinental
+      ? (k, fn) => {
+          const a = performance.now();
+          const before = this.continentalVolume();
+          this.stage = k; fn();
+          T[k] = performance.now() - a;
+          this.contDelta[k] = (this.contDelta[k] || 0) + (this.continentalVolume() - before);
+        }
+      : (k, fn) => { const a = performance.now(); this.stage = k; fn(); T[k] = performance.now() - a; };
 
     this.arcActivity = 0;
 
@@ -195,6 +209,7 @@ export class World {
 
     mark('arcs', () => volcanicArcs(this));
     mark('hotspots', () => hotspotVolcanism(this));
+    mark('magma', () => magmatism(this));
     mark('transform', () => transformEffects(this));
     mark('slabs', () => updateSlabs(this));
 
@@ -225,6 +240,14 @@ export class World {
     if (this.stepCount % 5 === 0 || this.stepCount < 3) this.audit = auditMass(this);
     if (this.events.length > 400) this.events.splice(0, this.events.length - 400);
     return this;
+  }
+
+  continentalVolume() {
+    let v = 0;
+    for (let i = 0; i < this.crust.n; i++) {
+      if (this.crust.alive[i]) v += this.crust.continental[i] * this.crust.thickness[i];
+    }
+    return v * this.pointArea;
   }
 
   sampleKinematics() {
@@ -261,6 +284,7 @@ export class World {
       tripleJunctions: (this.boundaries.tripleJunctions || []).length,
       plumes: this.mantle ? this.mantle.plumes.length : 0,
       slabWindows: this.slabWindowCount,
+      magmaChambers: this.meltChambers || 0,
       densityOps: this.densityOps,
       audit: this.audit,
       seaLevel: this.seaLevel,

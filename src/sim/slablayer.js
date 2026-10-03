@@ -1,5 +1,5 @@
 import { sinkRateOf } from './motion.js';
-import { applyThickness, deform } from './crustops.js';
+import { applyThickness, deform, stretchThin } from './crustops.js';
 import { ROCK, topRock } from './rocks.js';
 import { smoothstep } from './elevation.js';
 
@@ -54,10 +54,20 @@ export function updateSlabs(world) {
     // Dip evolution: steepen with depth and age, flatten where the zone is in
     // flat-slab mode.
     const f = flat.get(slabs.slabId[i]) || 0;
+    // A slab's dip is largely decided where it enters: old dense lithosphere
+    // goes down steeply, young buoyant lithosphere shallowly, and fast
+    // convergence holds it shallower still. Depth should only nudge that.
+    //
+    // The previous form added 0.55 rad purely for being deeper than ~300 km,
+    // which swamped every other term -- every deep slab converged on ~61
+    // degrees and the whole population clustered in a 3 degree band. Real arcs
+    // run from Cascadia at ~15 to Mariana at ~80, and that variety is set at
+    // the trench, not acquired on the way down.
+    const character = cfg.slabDipInit + cfg.slabDipAgeGain * smoothstep(10, 150, slabs.ageAtSub[i]);
     const targetDip = f > 0.4
       ? 0.10 + 0.25 * (1 - f)
-      : Math.min(cfg.slabDipMax, cfg.slabDipInit + 0.55 * smoothstep(0, 300, slabs.depth[i])
-                 + 0.30 * smoothstep(20, 140, slabs.ageAtSub[i]));
+      : Math.min(cfg.slabDipMax,
+                 character + cfg.slabDipDepthGain * smoothstep(0, 450, slabs.depth[i]));
     slabs.dip[i] += (targetDip - slabs.dip[i]) * Math.min(1, cfg.slabDipRate * dt * 8);
 
     // Grip on the parent plate weakens as the slab descends.
@@ -186,7 +196,11 @@ export function slabFeedback(world) {
         if (!crust.alive[p] || crust.plate[p] !== z.overriding) return;
         const w = Math.exp(-d2 / (2 * (reach * 0.45) * (reach * 0.45))) * stride;
         const d = -cfg.rollbackGain * rb * 0.02 * w * dt;   // rb>0 retreating -> thinning
-        applyThickness(world, p, d);
+        // Back-arc extension stretches the overriding plate; it does not
+        // consume it, so the thinned volume moves outward rather than
+        // vanishing.
+        if (d < 0) stretchThin(world, p, -d, { floor: 5, range: 3.0, inner: 1.3 });
+        else applyThickness(world, p, d);
         sc.stress[p] += rb * w * 0.02;
         if (rb > 0) {
           crust.weakness[p] = Math.min(1, crust.weakness[p] + 0.004 * w * dt);

@@ -35,6 +35,11 @@ export function auditMass(world) {
     vs += slabs.thickness[i];
   }
   vs *= pointArea;
+  // Melt in residence is NOT ledger volume -- it is credited when emplaced, so
+  // it must not be counted here as well. Reported for interest only.
+  let vm = 0;
+  for (let i = 0; i < crust.n; i++) if (crust.alive[i]) vm += crust.melt[i];
+  vm *= pointArea;
 
   const expected = budget.initial + budget.created + budget.regrid
                  - budget.destroyed - budget.slabRetired - budget.lost;
@@ -42,6 +47,7 @@ export function auditMass(world) {
   return {
     crustVolume: vc,
     slabVolume: vs,
+    meltVolume: vm,
     continentalArea: contArea,
     expected, actual,
     error: actual - expected,
