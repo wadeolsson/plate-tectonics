@@ -90,12 +90,23 @@ console.log(`=== validation after ${steps} Myr (${cfg.preset}, seed ${cfg.seed})
   // A distribution statement, not a statement about the single oldest
   // segment: right after a ridge reorganisation the oldest one can legitimately
   // be young, and the question is whether segments carry identity at all.
+  // With one plate there is no ridge anywhere, so there is nothing to carry
+  // identity. A supercontinent phase is a legitimate state -- the run passes
+  // through one most times -- and whether the suite lands in one at the fixed
+  // sampling time is luck, not a property of the simulation. Skip rather than
+  // fail, the same way the rift and inventory checks above do.
   const ages = segs.map((s) => w.t - s.birth).sort((a, b) => a - b);
-  const p90 = ages.length ? ages[Math.floor(0.9 * (ages.length - 1))] : 0;
-  const med = ages.length ? ages[Math.floor(0.5 * (ages.length - 1))] : 0;
-  console.log(`   segment age: median ${med.toFixed(0)} Myr, 90th percentile ${p90.toFixed(0)} Myr, oldest ${(ages[ages.length - 1] || 0).toFixed(0)} Myr`);
-  check('ridge segments carry identity across steps', p90 > 12,
-    `90th-percentile segment age is ${p90.toFixed(0)} Myr`);
+  if (!segs.length) {
+    console.log(`   (no active ridge segments: ${w.plates.aliveCount()} plate(s) right now`
+      + ` — segment identity check skipped)`);
+  } else {
+    const p90 = ages[Math.floor(0.9 * (ages.length - 1))];
+    const med = ages[Math.floor(0.5 * (ages.length - 1))];
+    console.log(`   segment age: median ${med.toFixed(0)} Myr, 90th percentile `
+      + `${p90.toFixed(0)} Myr, oldest ${ages[ages.length - 1].toFixed(0)} Myr`);
+    check('ridge segments carry identity across steps', p90 > 12,
+      `90th-percentile segment age is ${p90.toFixed(0)} Myr`);
+  }
 }
 
 // --- 3. Wadati-Benioff geometry ------------------------------------------

@@ -29,11 +29,17 @@ export class MapView {
     this.overlays = {
       faults: true, segments: true, slabs: false, quakes: false,
       junctions: true, velocity: false, symbols: true, grid: false,
-      plumes: true, mantleFlow: false,
+      plumes: true, mantleFlow: false, rivers: true, volcanoes: true,
     };
     this.section = null;        // SectionView, so the cut can be drawn in place
     this.dragHandle = null;     // 'a' | 'b' | 'mid' while an endpoint is held
     this.hillshade = true;
+    // Elevation and distance are both in km, so a real continental slope is a
+    // few parts per thousand and shades as perfectly flat. Every global relief
+    // map exaggerates the vertical for this reason; without it the lighting
+    // has nothing to work with.
+    this.reliefExaggeration = 28;   // vertical exaggeration, shading only
+    this.occlusionStrength = 5;     // how strongly hollows are darkened
     this.off = document.createElement('canvas');
     this.offCtx = this.off.getContext('2d');
     this.img = null;
@@ -109,7 +115,7 @@ export class MapView {
           const e = r.elevation[i];
           let tab, o;
           if (e < sea) { tab = L.bath.a; o = pick(1 - Math.min(1, (sea - e) / 7)); }
-          else { tab = L.hyp.a; o = pick(Math.min(1, (e - sea) / 6.5)); }
+          else { tab = L.hyp.a; o = pick(Math.min(1, Math.pow((e - sea) / 6.5, 0.45))); }
           r0 = tab[o]; g0 = tab[o + 1]; b0 = tab[o + 2];
           break;
         }
@@ -222,25 +228,69 @@ export class MapView {
     this.offCtx.putImageData(this.img, 0, 0);
   }
 
+  // Multi-directional hillshade with an ambient-occlusion term.
+  //
+  // A single light source leaves every slope facing away from it uniformly
+  // dark, so whole flanks of a range read as flat shadow and ridge lines
+  // facing the light vanish. Relief shading on real maps combines several
+  // azimuths for exactly this reason: every slope catches at least one light,
+  // so the SHAPE survives rather than just the aspect. The occlusion term --
+  // how much a cell sits below its surroundings -- then puts valleys in shade
+  // and leaves ridges standing, which is what reads as depth.
   computeShade() {
     const r = this.raster;
-    const { gw, gh } = r;
-    if (!this._shade || this._shade.length !== gw * gh) this._shade = new Float32Array(gw * gh);
-    const s = this._shade;
-    const e = r.elevation;
-    const zx = 2.2 / r.cw, zy = 2.2 / r.ch;
+    const { gw, gh, cw, ch } = r;
+    const n = gw * gh;
+    if (!this._shade || this._shade.length !== n) this._shade = new Float32Array(n);
+    const out = this._shade;
+    // Shade the sharp reconstruction, not the colour field -- see
+    // Raster.sharpenRelief(). This is where the terrain gets its shape back.
+    const e = r.elevSharp && r.elevSharp.length === n ? r.elevSharp : r.elevation;
+    const vx = this.reliefExaggeration / cw, vy = this.reliefExaggeration / ch;
+
+    // Four lights, dominant from the north-west as convention expects.
+    const lights = [
+      { az: 315, alt: 50, w: 0.45 },
+      { az: 45, alt: 42, w: 0.22 },
+      { az: 180, alt: 38, w: 0.18 },
+      { az: 265, alt: 60, w: 0.15 },
+    ].map((l) => {
+      const a = l.az * Math.PI / 180, z = l.alt * Math.PI / 180;
+      return { x: Math.cos(z) * Math.sin(a), y: -Math.cos(z) * Math.cos(a), z: Math.sin(z), w: l.w };
+    });
+
     for (let y = 0; y < gh; y++) {
       const yp = ((y - 1) + gh) % gh, yn = (y + 1) % gh;
+      const rowP = yp * gw, rowN = yn * gw, row = y * gw;
       for (let x = 0; x < gw; x++) {
         const xp = ((x - 1) + gw) % gw, xn = (x + 1) % gw;
-        const dzdx = (e[y * gw + xn] - e[y * gw + xp]) * 0.5 * zx;
-        const dzdy = (e[yn * gw + x] - e[yp * gw + x]) * 0.5 * zy;
-        // Light from the north-west, elevated 45 degrees.
-        const nl = (-dzdx * 0.5 + dzdy * 0.5 + 1) / Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
-        s[y * gw + x] = 0.72 + 0.55 * Math.max(0, nl);
+        const c = row + x;
+        // Horn's method: a 3x3 Sobel, far less noisy than a 2-cell difference.
+        const z1 = e[rowP + xp], z2 = e[rowP + x], z3 = e[rowP + xn];
+        const z4 = e[row + xp], z6 = e[row + xn];
+        const z7 = e[rowN + xp], z8 = e[rowN + x], z9 = e[rowN + xn];
+        const dzdx = ((z3 + 2 * z6 + z9) - (z1 + 2 * z4 + z7)) / 8 * vx;
+        const dzdy = ((z7 + 2 * z8 + z9) - (z1 + 2 * z2 + z3)) / 8 * vy;
+        const inv = 1 / Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
+        const nx = -dzdx * inv, ny = -dzdy * inv, nz = inv;
+
+        let lit = 0;
+        for (const L of lights) {
+          const d = nx * L.x + ny * L.y + nz * L.z;
+          lit += L.w * (d > 0 ? d : 0);
+        }
+
+        // Sitting below your neighbours darkens you; standing above them does
+        // not brighten you as much. Cheap, and it is what gives valleys depth.
+        const mean8 = (z1 + z2 + z3 + z4 + z6 + z7 + z8 + z9) / 8;
+        const rel = e[c] - mean8;
+        const occ = rel < 0 ? 1 + Math.max(-0.45, rel * this.occlusionStrength)
+                            : 1 + Math.min(0.18, rel * this.occlusionStrength * 0.35);
+
+        out[c] = Math.max(0.25, Math.min(1.75, (0.46 + 1.08 * lit) * occ));
       }
     }
-    return s;
+    return out;
   }
 
   // ---- main draw -------------------------------------------------------
@@ -311,12 +361,70 @@ export class MapView {
     if (this.overlays.quakes) this.drawQuakes(ctx, px);
     if (this.overlays.mantleFlow) this.drawMantleFlow(ctx, px);
     if (this.overlays.velocity) this.drawVelocities(ctx, px);
+    if (this.overlays.rivers) this.drawRivers(ctx, px);
+    if (this.overlays.volcanoes) this.drawVolcanoes(ctx, px);
     if (this.overlays.plumes) this.drawPlumes(ctx, px);
     if (this.section && this.section.line) this.drawSectionLine(ctx, px);
   }
 
   // Hotspots. They sit still while the plates slide over them, so the chain of
   // volcanoes trailing away from one is the plate's own track.
+  // Rivers, straight off the drainage solve. Width follows the square root of
+  // discharge, the way a real channel does, so a trunk stream reads as a trunk
+  // and its headwaters do not. Only channels above a threshold are drawn --
+  // every cell technically has a flow direction, and drawing all of them would
+  // just flood-fill the continents.
+  drawRivers(ctx, px) {
+    const d = this.world.drainage;
+    if (!d) return;
+    const { gw, gh, cw, ch, area, recv, filled } = d;
+    const sea = this.world.seaLevel;
+    const minA = this.world.cfg.riverMinArea;
+    const maxA = Math.max(minA * 50, this.world.cfg.W * this.world.cfg.H * 0.02);
+    ctx.lineCap = 'round';
+    for (let c = 0; c < gw * gh; c++) {
+      const a = area[c];
+      if (a < minA) continue;
+      const r = recv[c];
+      if (r < 0 || filled[c] <= sea) continue;
+      const x0 = (c % gw + 0.5) * cw, y0 = ((c / gw | 0) + 0.5) * ch;
+      let x1 = (r % gw + 0.5) * cw, y1 = ((r / gw | 0) + 0.5) * ch;
+      // Do not draw the segment that crosses the seam; the tiling handles it.
+      if (Math.abs(x1 - x0) > this.world.W / 2) continue;
+      if (Math.abs(y1 - y0) > this.world.H / 2) continue;
+      const t = Math.min(1, Math.sqrt(a / maxA));
+      ctx.strokeStyle = `rgba(104,170,228,${(0.35 + 0.55 * t).toFixed(3)})`;
+      ctx.lineWidth = (0.6 + 3.4 * t) * px;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    }
+  }
+
+  // Volcanoes. A filled triangle is the convention, and the two kinds really
+  // do look different on the ground, so they look different here: a tall
+  // narrow triangle for a stratocone, a broad flat one for a shield.
+  drawVolcanoes(ctx, px) {
+    const V = this.world.volcanoes;
+    if (!V) return;
+    for (let i = 0; i < V.n; i++) {
+      if (!V.alive[i]) continue;
+      const shield = V.kind[i] === 1;
+      const vig = Math.min(1, V.vigour[i] / 40);
+      const h = (shield ? 5.5 : 8) * px * (0.65 + 0.5 * vig);
+      const wd = (shield ? 9 : 5) * px * (0.65 + 0.5 * vig);
+      const x = V.x[i], y = V.y[i];
+      ctx.beginPath();
+      ctx.moveTo(x, y - h); ctx.lineTo(x + wd, y + h * 0.55); ctx.lineTo(x - wd, y + h * 0.55);
+      ctx.closePath();
+      // Dormant vents are hollow; an erupting one is filled and hot.
+      const active = V.idle[i] < 6;
+      ctx.fillStyle = active ? 'rgba(246,108,62,0.92)' : 'rgba(58,46,44,0.62)';
+      ctx.fill();
+      ctx.strokeStyle = active ? 'rgba(255,224,150,0.95)' : 'rgba(228,214,206,0.70)';
+      ctx.lineWidth = 1.1 * px;
+      ctx.stroke();
+    }
+  }
+
   drawPlumes(ctx, px) {
     const m = this.world.mantle;
     if (!m) return;

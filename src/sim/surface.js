@@ -1,4 +1,4 @@
-import { ROCK, pushTop, scaleColumn, metamorphoseColumn } from './rocks.js';
+import { ROCK, pushTop, scaleColumn, metamorphoseColumn, delaminate, topRock, rockResistance } from './rocks.js';
 import { elevationOf } from './elevation.js';
 import { MAX_LAYERS } from '../core/pointsets.js';
 
@@ -39,7 +39,22 @@ export function surfaceProcesses(world) {
   }
   if (cfg.metamorphismEnabled && world.stepCount % cfg.metamorphismInterval === 0) {
     metamorphism(world);
+    if (cfg.delaminationEnabled) rootFoundering(world);
   }
+}
+
+// Over-thickened roots founder. Checked alongside metamorphism because it is
+// the metamorphic reaction -- mafic lower crust crossing into the eclogite
+// field -- that makes the root denser than the mantle under it in the first
+// place.
+function rootFoundering(world) {
+  const { crust } = world;
+  let n = 0;
+  for (let i = 0; i < crust.n; i++) {
+    if (!crust.alive[i]) continue;
+    if (delaminate(world, i) > 0) n++;
+  }
+  world.delaminationEvents = n;
 }
 
 // Cook every column against its own geotherm. The gradient comes from the same
@@ -70,7 +85,7 @@ function deposition(world) {
   for (let i = 0; i < crust.n; i++) {
     if (!crust.alive[i]) continue;
     const e = elevationOf(cfg, crust.thickness[i], crust.continental[i],
-      crust.litho[i], crust.age[i]);
+      crust.litho[i], crust.age[i], crust.edifice[i]);
     const depth = world.seaLevel - e;
     if (depth <= 0) continue;                 // land gets no marine sediment
 
@@ -101,7 +116,7 @@ function erosion(world, dt) {
   for (let i = 0; i < crust.n; i++) {
     if (!crust.alive[i]) continue;
     elev[i] = elevationOf(cfg, crust.thickness[i], crust.continental[i],
-      crust.litho[i], crust.age[i]);
+      crust.litho[i], crust.age[i], crust.edifice[i]);
   }
 
   const R = world.spacing * cfg.erosionRange;
@@ -115,8 +130,13 @@ function erosion(world, dt) {
     // Strip at a rate set by how high the ground stands. Linear in relief is
     // the crudest defensible law and it is self-limiting through isostasy:
     // thinning the column lowers it, which slows the stripping.
+    // Differential erosion. Stripping the soft cover off a resistant bed slows
+    // the attack to a crawl; a slate or a sediment pile goes three times
+    // faster than the granite beside it. This is where structure in a
+    // landscape comes from -- without it, relief is a set of smooth domes.
+    const resist = rockResistance(topRock(crust, i));
     const strip = Math.min(cfg.erosionMaxStrip * dt,
-      cfg.erosionRate * (e - world.seaLevel) * dt);
+      cfg.erosionRate * (e - world.seaLevel) * dt / resist);
     if (strip <= 1e-5 || crust.thickness[i] - strip < 4) continue;
 
     // Find lower ground to put it on, preferring the lowest.

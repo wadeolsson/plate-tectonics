@@ -231,8 +231,11 @@ export function makeConfig(preset = 'medium', overrides = {}) {
 
     // --- rasterisation ----------------------------------------------------
     rasterCellsPerSpacing: 2,  // grid cell = spacing / this
-    splatRadiusFactor: 2.0,    // in units of spacing
-    splatSigmaFactor: 0.92,
+    splatRadiusFactor: 1.55,
+    // A second, tight reconstruction used only for relief shading.
+    sharpRadiusFactor: 0.80,
+    sharpSigmaFactor: 0.36,    // in units of spacing
+    splatSigmaFactor: 0.70,
 
     // --- surface processes --------------------------------------------------
     // Sedimentary rock needs a source. These are the two that do not require a
@@ -267,6 +270,13 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     maxGeotherm: 45,         // deg C per km, ceiling on the conductive gradient
     eclogiteP: 12,           // kbar above which cold mafic rock eclogitises
     eclogiteTmax: 650,       // deg C; hotter than this gives amphibolite instead
+    // Nothing in a linear isostatic model stops a root growing, so 125 km of
+    // crust stood 16 km high. Over-thickened mafic lower crust crosses into
+    // the eclogite field, becomes denser than the mantle beneath it, and
+    // founders -- which is what actually caps mountain height on Earth.
+    delaminationEnabled: true,
+    delaminationThickness: 58,   // km of crust above which the root can founder
+    delaminationFloor: 46,       // km it is reduced toward
     eclogiteDepth: 55,       // km at which slab crust begins converting
     eclogiteRate: 0.06,      // per Myr conversion rate once deep enough
     eclogitePullGain: 0.55,  // extra slab pull from a fully eclogitised slab
@@ -279,6 +289,39 @@ export function makeConfig(preset = 'medium', overrides = {}) {
     // and the overflow has nowhere to go.
     spreadThreshold: 50,     // km; flow starts above this
     spreadRate: 0.14,        // per Myr, fraction of the excess moved
+    // --- volcanic edifices -----------------------------------------------
+    // A narrow load is held up by the strength of the plate, not by a root.
+    // 0 would mean full Airy compensation (edifice invisible); 1 would mean a
+    // rigid plate that never bends. Real volcanoes sit near 0.7-0.8.
+    edificeSupport: 0.75,
+    edificeMax: 4.5,             // km; past this the flanks fail and spread
+    edificeRelax: 90,            // Myr; flexure relaxes and the load is
+                                 // gradually taken up by a compensating root
+    volcanoesEnabled: true,
+    volcanoNucleateMelt: 0.03,   // km of melt under a point before a vent forms
+    volcanoSpacing: 3.0,         // in units of point spacing, between centres
+    volcanoCaptureRange: 4.0,    // how far a vent draws melt from
+    volcanoLifetime: 25,         // Myr of silence before a vent is extinct
+    volcanoMinRate: 900,         // km^3/Myr below which a vent counts as dying
+    volcanoMemory: 25,           // Myr, decay constant of the vigour average
+    volcanoMax: 2800,
+    stratoRadius: 0.55,           // cone radius, in units of spacing (andesite)
+    shieldRadius: 1.2,           // shields spread much further (basalt)
+
+    // --- fluvial erosion (rivers) ----------------------------------------
+    fluvialEnabled: true,
+    fluvialInterval: 4,      // steps between drainage solves; the solve is the
+                             // expensive part and landscapes are slow
+    streamK: 0.05,           // stream-power coefficient, km per Myr at unit A,S
+    streamM: 0.5,            // drainage-area exponent (detachment-limited)
+    streamN: 1.0,            // slope exponent
+    streamMaxCut: 0.09,      // km/Myr, ceiling on incision at one cell
+    streamBasinFill: 0.05,
+    deltaRadius: 4,          // cells a river mouth spreads its load over
+    riverMinArea: 40000,     // km^2 of drainage before a channel is drawn   // km of overfill allowed in a closed basin
+
+    collapseThickness: 58,   // km; past here the pile fails under its own weight
+    collapseGain: 0.004,     // per km^2 of excess; makes the limit a real ceiling
     spreadRange: 4.5,        // in units of spacing; must see past a plateau
     spreadEnabled: true,
 

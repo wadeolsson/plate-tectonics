@@ -38,7 +38,7 @@ export function isostaticElevation(cfg, thickness, continental, litho) {
 // Mixed crust interpolates between the isostatic and age-depth results. The
 // transition zone IS the continental shelf and slope, so the blend has to be
 // smooth or every coastline gets a cliff.
-export function elevationOf(cfg, thickness, continental, litho, age) {
+export function elevationOf(cfg, thickness, continental, litho, age, edifice = 0) {
   const iso = isostaticElevation(cfg, thickness, continental, litho);
   const rhoC = mix(cfg.rhoCrustOcean, cfg.rhoCrustCont, continental);
   // The age-depth curve describes seafloor of NORMAL crustal thickness. Crust
@@ -48,11 +48,12 @@ export function elevationOf(cfg, thickness, continental, litho, age) {
   const excess = (thickness - cfg.thickOcean) * (1 - rhoC / cfg.rhoMantle);
   const oceanic = -oceanDepthMetres(cfg, age) / 1000 + excess;
   const w = smoothstep(0.12, 0.62, continental);
-  return mix(oceanic, iso, w);
+  // The edifice rides on top, largely uncompensated (see pointsets.js).
+  return mix(oceanic, iso, w) + edifice * cfg.edificeSupport;
 }
 
 // Vectorised form for the rasterised grid.
-export function elevationField(cfg, thickness, continental, litho, age, out) {
+export function elevationField(cfg, thickness, continental, litho, age, out, edifice = null) {
   const n = thickness.length;
   const rhoM = cfg.rhoMantle;
   for (let i = 0; i < n; i++) {
@@ -66,7 +67,7 @@ export function elevationField(cfg, thickness, continental, litho, age, out) {
     const oceanic = -((1 - w2) * (cfg.ridgeDepth + cfg.coolingCoef * Math.sqrt(t))
                     + w2 * cfg.coolingFlatten) / 1000 + excess;
     const w = smoothstep(0.12, 0.62, c);
-    out[i] = oceanic + (iso - oceanic) * w;
+    out[i] = oceanic + (iso - oceanic) * w + (edifice ? edifice[i] * cfg.edificeSupport : 0);
   }
   return out;
 }

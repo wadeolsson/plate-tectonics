@@ -211,6 +211,7 @@ export class SectionView {
     const best = new Int32Array(nCols);
     const bestW = new Float64Array(nCols);
     const melt = new Float64Array(nCols);
+    const edif = new Float64Array(nCols);
     const meltD = new Float64Array(nCols);
     const erupt = new Float64Array(nCols);
     const span = len / nCols;
@@ -230,6 +231,7 @@ export class SectionView {
         melt[c] += wt * w.crust.melt[i];
         meltD[c] += wt * w.crust.melt[i] * w.crust.meltDepth[i];
         erupt[c] += wt * w.crust.erupting[i];
+        edif[c] += wt * w.crust.edifice[i];
         wsum[c] += wt;
         // Plate identity cannot be averaged. Weighted vote instead, so a
         // column straddling a boundary picks the side that dominates it.
@@ -261,8 +263,10 @@ export class SectionView {
         melt: melt[c] / wsum[c],
         meltDepth: melt[c] > 1e-9 ? meltD[c] / melt[c] : 0,
         erupting: erupt[c] / wsum[c],
+        edifice: edif[c] / wsum[c],
       };
-      cols[c].elev = elevationOf(cfg, cols[c].thickness, cols[c].continental, cols[c].litho, cols[c].age);
+      cols[c].elev = elevationOf(cfg, cols[c].thickness, cols[c].continental,
+        cols[c].litho, cols[c].age, cols[c].edifice);
     }
 
     // Bridge short empty runs: a one- or two-column hole is sampling noise,
@@ -281,8 +285,38 @@ export class SectionView {
         plate: f < 0.5 ? A.plate : B.plate,
         rep: f < 0.5 ? A.rep : B.rep,
         melt: mix('melt'), meltDepth: mix('meltDepth'), erupting: mix('erupting'),
+        edifice: mix('edifice'),
       };
     }
+    // Spatial coherence of the representative column.
+    //
+    // Each column picked its own nearest point, independently of its
+    // neighbours. Two adjacent columns 20 km apart would often pick two
+    // different real points whose stratigraphies differ in detail, so every
+    // layer boundary in the drawing jumped up and down from one column to the
+    // next -- the "funky mountains" look. The surface was smooth, because
+    // thickness is averaged, but the bands under it were hashed.
+    //
+    // The fix is not to average the stratigraphy, which would be meaningless.
+    // It is to let a column KEEP its neighbour's representative point when
+    // that point is a reasonable stand-in for it, so a run of columns shares
+    // one real column and the bands are continuous. A genuine lateral change
+    // -- a different plate, a very different thickness -- still breaks the run,
+    // which is correct: that IS a geological boundary.
+    let held = -1, heldPlate = -1, heldThick = 0;
+    for (let c = 0; c < nCols; c++) {
+      const q = cols[c];
+      if (!q) { held = -1; continue; }
+      const samePlate = q.plate === heldPlate;
+      const close = heldThick > 0
+        && Math.abs(q.thickness - heldThick) < 0.28 * Math.max(q.thickness, heldThick);
+      if (held >= 0 && samePlate && close && w.crust.alive[held]) {
+        q.rep = held;
+      } else {
+        held = q.rep; heldPlate = q.plate; heldThick = q.thickness;
+      }
+    }
+
     return cols;
   }
 

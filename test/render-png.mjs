@@ -18,6 +18,8 @@ const args = Object.fromEntries(process.argv.slice(2).map((a) => {
 const steps = +(args.steps ?? 120);
 const out = args.out || '/tmp/pt';
 const preset = args.preset || 'small';
+const EXAG = +(args.exag ?? 28);   // vertical exaggeration, shading only
+const OCC = +(args.occ ?? 5);      // hollow-darkening strength
 const scale = +(args.scale ?? 2);
 fs.mkdirSync(out, { recursive: true });
 
@@ -61,7 +63,7 @@ function paint(layer) {
         case 'elevation': {
           const e = raster.elevation[i];
           c = e < sea ? CM.bathymetry(1 - Math.min(1, (sea - e) / 7))
-                      : CM.hypsometric(Math.min(1, (e - sea) / 6.5));
+                      : CM.hypsometric(landTint(e - sea));
           const k = shade[i];
           c = [c[0] * k, c[1] * k, c[2] * k];
           break;
@@ -170,19 +172,43 @@ function drawPlumes(px, W, H) {
   }
 }
 
+// Almost all land is under 1 km, so a linear ramp to 6.5 km spends nine
+// tenths of the palette on ground that barely exists and paints whole
+// continents one flat green. Real hypsometric tints use intervals that
+// tighten near sea level for exactly this reason.
+function landTint(h) {
+  return Math.min(1, Math.pow(Math.max(0, h) / 6.5, 0.45));
+}
+
 function computeShade() {
   const { gw, gh, cw, ch } = raster;
   const s = new Float32Array(gw * gh);
-  const e = raster.elevation;
-  const zx = 2.2 / cw, zy = 2.2 / ch;
+  const e = raster.elevSharp && raster.elevSharp.length === gw * gh ? raster.elevSharp : raster.elevation;
+  const vx = EXAG / cw, vy = EXAG / ch;
+  const lights = [
+    { az: 315, alt: 50, w: 0.45 }, { az: 45, alt: 42, w: 0.22 },
+    { az: 180, alt: 38, w: 0.18 }, { az: 265, alt: 60, w: 0.15 },
+  ].map((l) => {
+    const a = l.az * Math.PI / 180, z = l.alt * Math.PI / 180;
+    return { x: Math.cos(z) * Math.sin(a), y: -Math.cos(z) * Math.cos(a), z: Math.sin(z), w: l.w };
+  });
   for (let y = 0; y < gh; y++) {
-    const yp = (y - 1 + gh) % gh, yn = (y + 1) % gh;
+    const rowP = (((y - 1) + gh) % gh) * gw, rowN = ((y + 1) % gh) * gw, row = y * gw;
     for (let x = 0; x < gw; x++) {
-      const xp = (x - 1 + gw) % gw, xn = (x + 1) % gw;
-      const dzdx = (e[y * gw + xn] - e[y * gw + xp]) * 0.5 * zx;
-      const dzdy = (e[yn * gw + x] - e[yp * gw + x]) * 0.5 * zy;
-      const nl = (-dzdx * 0.5 + dzdy * 0.5 + 1) / Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
-      s[y * gw + x] = 0.72 + 0.55 * Math.max(0, nl);
+      const xp = ((x - 1) + gw) % gw, xn = (x + 1) % gw;
+      const z1 = e[rowP + xp], z2 = e[rowP + x], z3 = e[rowP + xn];
+      const z4 = e[row + xp], z6 = e[row + xn];
+      const z7 = e[rowN + xp], z8 = e[rowN + x], z9 = e[rowN + xn];
+      const dzdx = ((z3 + 2 * z6 + z9) - (z1 + 2 * z4 + z7)) / 8 * vx;
+      const dzdy = ((z7 + 2 * z8 + z9) - (z1 + 2 * z2 + z3)) / 8 * vy;
+      const inv = 1 / Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
+      const nx = -dzdx * inv, ny = -dzdy * inv, nz = inv;
+      let lit = 0;
+      for (const L of lights) { const d = nx * L.x + ny * L.y + nz * L.z; lit += L.w * (d > 0 ? d : 0); }
+      const mean8 = (z1 + z2 + z3 + z4 + z6 + z7 + z8 + z9) / 8;
+      const rel = e[row + x] - mean8;
+      const occ = rel < 0 ? 1 + Math.max(-0.45, rel * OCC) : 1 + Math.min(0.18, rel * OCC * 0.35);
+      s[row + x] = Math.max(0.25, Math.min(1.75, (0.46 + 1.08 * lit) * occ));
     }
   }
   return s;

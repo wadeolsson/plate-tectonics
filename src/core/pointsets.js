@@ -113,6 +113,11 @@ export class CrustSet extends SoA {
       ['meltDepth', Float32Array],   // km below the surface the chamber sits
       ['meltFelsic', Float32Array],  // composition of that magma
       ['erupting', Float32Array],    // km/Myr reaching the surface right now
+      // Height of volcanic construct standing on this column. Kept apart from
+      // thickness because a narrow edifice is NOT Airy-compensated -- the
+      // lithosphere carries it flexurally, which is why Mauna Loa stands 9 km
+      // above the sea floor instead of the 1.5 km local isostasy would allow.
+      ['edifice', Float32Array],
 
       // The crustal column, top (youngest) first. `thickness` and
       // `continental` above are CACHES derived from these -- see rocks.js.

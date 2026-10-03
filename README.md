@@ -52,6 +52,8 @@ supercontinent is.
 | [src/sim/processes.js](src/sim/processes.js) | Accretion, subduction, wedge, arcs, collision, transform, orogenic collapse. |
 | [src/sim/slablayer.js](src/sim/slablayer.js) | Slab descent and the feedbacks: flat slab, rollback, slab windows. |
 | [src/sim/rifting.js](src/sim/rifting.js) | Plate stress state, rift nucleation, the cut, rift thinning and breakup. |
+| [src/sim/fluvial.js](src/sim/fluvial.js) | Drainage: depression filling, D8 routing, stream-power incision, deltas. |
+| [src/sim/volcanoes.js](src/sim/volcanoes.js) | Persistent volcanic vents that build real edifices. |
 | [src/sim/density.js](src/sim/density.js) | Point insertion and merging; boundary cleanup. |
 | [src/sim/diagnostics.js](src/sim/diagnostics.js) | Mass ledger and the earthquake catalogue. |
 | [src/sim/geophysics.js](src/sim/geophysics.js) | Heat flow, gravity and strain rate, derived from the rasterised state. |
@@ -106,7 +108,14 @@ these:
 
 Overlays: the classified fault network coloured by obliquity, ridge segments
 and transforms, geologic fault symbols, triple junctions, earthquakes, velocity
-arrows, slab depth contours, and the cross-section line with its corridor.
+arrows, slab depth contours, **rivers** (straight off the drainage solve, width
+following the square root of discharge the way a channel does), **volcanoes**
+(filled triangles, tall and narrow for a stratocone, broad and flat for a
+shield; hollow when dormant), and the cross-section line with its corridor.
+
+Relief shading is on by default and is computed from a separate barycentric
+reconstruction of the surface rather than from the colour field — see *Relief
+shading gets its own reconstruction* below.
 
 ## Headless tools
 
@@ -252,11 +261,78 @@ the plate it came from, with its subducted crust as a bright skin on top. The
 surface band is tinted the same way and broken at every plate boundary the line
 crosses, each labelled with what the boundary network says it is.
 
+**Rivers, not just hillslopes.** Hillslope transfer is local: a column looks at
+the ground beside it and moves material a short way downhill. Local rules make
+smooth domes, because the thing that organises real topography is not local at
+all — a river carries water that fell a thousand kilometres away and incises in
+proportion to that accumulated discharge. So the surface gets a proper drainage
+model on a grid: depressions are filled by priority flood (without it most of
+the map is undrained pits and no network forms), flow is routed D8 down the
+filled surface, drainage area is accumulated, and incision follows stream power
+`dz = K·A^m·S^n` divided by the rock's resistance. The grid is a nearest-point
+partition of the cloud, so mapping the result back onto the points is exact.
+
+**Sediment that reaches the sea builds the margin.** The load does not vanish at
+the shoreline: it spreads over the submarine cells around each river mouth,
+preferring the deepest and never building above sea level. Dropping it instead
+was deleting continental crust fast enough to stop continents rifting at all,
+because there was progressively less continent to rift — the kind of error that
+shows up three systems away from its cause.
+
+**Volcanoes are edifices, not a welt.** Melt used to erupt wherever it happened
+to be, so a 2000 km arc got a 2000 km low ridge. Real arcs collect their melt
+into discrete, long-lived centres and each one builds a cone. A register of
+persistent vents captures the melt rising under its neighbourhood — by nearest
+vent, not first claim, or arc cones swallow the plume melt and no shields ever
+form — and emplaces it as a radially decaying pile. Basaltic melt builds broad
+shields, andesitic melt steep stratocones. Past a stable height the flanks fail
+and the pile spreads, enforced as a hard per-point ceiling with redistribution;
+a per-eruption test never holds, because a vent erupts onto the same summit
+again and again.
+
+**An edifice is not Airy-compensated.** A narrow load is carried by the strength
+of the plate, not by a root, which is why Mauna Loa stands 9 km above the
+seafloor instead of the 1.5 km local isostasy allows. Edifice height is tracked
+apart from crustal thickness and enters elevation largely uncompensated, then
+relaxes over ~90 Myr as the plate bends and a compensating root grows. That
+relaxation is why ancient seamounts are drowned and young ones are islands.
+
+**Different rocks weather at different rates.** Every rock type carries a
+resistance, and erosion is divided by it. Stripping soft cover off a resistant
+bed slows the attack to a crawl, so structure survives in the landscape; without
+it, relief is a set of smooth domes.
+
+**Relief shading gets its own reconstruction.** The colour map wants a wide
+splat — it hides the point cloud and gives even fields. But that is a low-pass
+filter and hillshading is a high-pass operation, so shading the colour field
+shades a surface whose detail has already been averaged away. A narrower splat
+is no better: a tight Gaussian turns every point into a visible disc. What is
+wanted is an *interpolant*, so the shading is computed from the elevation
+interpolated barycentrically over the Delaunay triangulation the simulation
+already maintains. Nothing is invented and nothing is averaged. Elevation and
+distance are both in kilometres, so a real continental slope is a few parts per
+thousand; the vertical is exaggerated for shading, as on any relief map.
+
 **Orogenic collapse.** Crust well above the orogenic root cap flows laterally in
 the lower crust. This is not erosion — nothing leaves the plate and nothing is
 carried downhill by water — it is the mass-conserving flow that turns a needle of
 over-thickened crust into a plateau. Without it, thickening processes saturate a
 handful of points and the overflow has nowhere to go.
+
+The rule was originally downhill-only, which fails in exactly the case it exists
+for: a collision thickens every point in the orogen at once, so in the interior
+nobody has a downhill neighbour and nothing moves. That is how crust reached
+120 km here when the thickest on Earth is about 80. Past roughly 60 km the
+lower crust is hot enough to flow and the orogen's own weight drives it outward
+whether or not there is a local slope, so above that limit material is pushed
+into the thinnest neighbours regardless of gradient, at a rate that climbs
+steeply with the excess. Peak elevation fell from 12.4 km to about 9.
+
+**Over-thickened roots founder.** Mafic lower crust that crosses into the
+eclogite field becomes denser than the mantle under it and drops off. Note the
+sign of the effect: delamination removes dense material, so the column gets
+*lighter* and the surface goes UP, as under the Sierra Nevada. It is not what
+limits peak elevation — collapse is.
 
 ## Build order
 

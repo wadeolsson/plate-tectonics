@@ -31,21 +31,25 @@ export const ROCK = {
   GNEISS: 12,
 };
 
-// density kg/m^3, nominal felsic fraction, display colour, short name.
+// density kg/m^3, nominal felsic fraction, display colour, short name, and
+// resistance to weathering (1.0 = granite). Differential erosion is most of
+// what gives a landscape structure rather than smooth domes: hard beds stand
+// out as ridges and escarpments, soft ones are hollowed into valleys. The
+// Appalachians are ridge-and-valley for exactly this reason.
 export const ROCKS = [
-  { id: 0,  name: 'peridotite',   rho: 3300, felsic: 0.00, color: [84, 92, 70] },
-  { id: 1,  name: 'basalt',       rho: 2950, felsic: 0.05, color: [112, 142, 170] },
-  { id: 2,  name: 'gabbro',       rho: 2950, felsic: 0.05, color: [74, 100, 134] },
-  { id: 3,  name: 'sediment',     rho: 2400, felsic: 0.35, color: [226, 206, 152] },
-  { id: 4,  name: 'andesite',     rho: 2750, felsic: 0.70, color: [196, 118, 96] },
-  { id: 5,  name: 'granite',      rho: 2680, felsic: 0.95, color: [236, 164, 160] },
-  { id: 6,  name: 'flood basalt', rho: 2900, felsic: 0.15, color: [142, 86, 78] },
-  { id: 7,  name: 'greenstone',   rho: 2980, felsic: 0.10, color: [96, 150, 116] },
-  { id: 8,  name: 'amphibolite',  rho: 3050, felsic: 0.15, color: [72, 124, 118] },
-  { id: 9,  name: 'eclogite',     rho: 3500, felsic: 0.05, color: [128, 64, 96] },
-  { id: 10, name: 'slate',        rho: 2600, felsic: 0.40, color: [120, 118, 134] },
-  { id: 11, name: 'schist',       rho: 2700, felsic: 0.55, color: [158, 142, 170] },
-  { id: 12, name: 'gneiss',       rho: 2750, felsic: 0.80, color: [206, 176, 196] },
+  { id: 0,  name: 'peridotite',   rho: 3300, felsic: 0.00, color: [84, 92, 70], resist: 1.3 },
+  { id: 1,  name: 'basalt',       rho: 2950, felsic: 0.05, color: [112, 142, 170], resist: 1.1 },
+  { id: 2,  name: 'gabbro',       rho: 2950, felsic: 0.05, color: [74, 100, 134], resist: 1.2 },
+  { id: 3,  name: 'sediment',     rho: 2400, felsic: 0.35, color: [226, 206, 152], resist: 0.35 },
+  { id: 4,  name: 'andesite',     rho: 2750, felsic: 0.70, color: [196, 118, 96], resist: 0.9 },
+  { id: 5,  name: 'granite',      rho: 2680, felsic: 0.95, color: [236, 164, 160], resist: 1.0 },
+  { id: 6,  name: 'flood basalt', rho: 2900, felsic: 0.15, color: [142, 86, 78], resist: 1.05 },
+  { id: 7,  name: 'greenstone',   rho: 2980, felsic: 0.10, color: [96, 150, 116], resist: 1.15 },
+  { id: 8,  name: 'amphibolite',  rho: 3050, felsic: 0.15, color: [72, 124, 118], resist: 1.35 },
+  { id: 9,  name: 'eclogite',     rho: 3500, felsic: 0.05, color: [128, 64, 96], resist: 1.4 },
+  { id: 10, name: 'slate',        rho: 2600, felsic: 0.40, color: [120, 118, 134], resist: 0.55 },
+  { id: 11, name: 'schist',       rho: 2700, felsic: 0.55, color: [158, 142, 170], resist: 0.75 },
+  { id: 12, name: 'gneiss',       rho: 2750, felsic: 0.80, color: [206, 176, 196], resist: 1.25 },
 ];
 
 // Pick a plausible named rock for material of a given composition. Used by the
@@ -347,6 +351,7 @@ export function stackLayers(crust, i, layers, fraction, cap) {
 }
 
 export const rockName = (id) => ROCKS[id].name;
+export const rockResistance = (id) => ROCKS[id].resist;
 export const rockColor = (id) => ROCKS[id].color;
 
 // ---------------------------------------------------------------------------
@@ -421,4 +426,44 @@ export function metamorphoseColumn(cfg, crust, i, surfaceT, gradient) {
     loadKm += h;
   }
   if (changed) recompute(crust, i);
+}
+
+// ---------------------------------------------------------------------------
+// delamination
+// ---------------------------------------------------------------------------
+// Why mountains cannot grow without limit. Isostasy is linear in crustal
+// thickness, so nothing in the elevation model stops a 125 km root standing 16
+// km high -- and the simulation duly produced 11 km peaks against Earth's 8.8.
+//
+// What actually limits them is that over-thickened mafic lower crust crosses
+// into the eclogite field, and eclogite at 3500 kg/m^3 is DENSER than the
+// mantle it is sitting on. It stops being crust in any buoyant sense and
+// founders off into the mantle, taking the root with it. The surface drops,
+// the orogen stops growing, and the crust is permanently recycled.
+export function delaminate(world, i) {
+  const { cfg, crust, pointArea } = world;
+  if (crust.thickness[i] < cfg.delaminationThickness) return 0;
+  if (crust.continental[i] < 0.35) return 0;        // oceanic lithosphere already sinks
+
+  const base = i * MAX_LAYERS;
+  const n = crust.nLayers[i];
+  let shed = 0, shedCont = 0;
+  // Work from the bottom: only the deepest layers are in the eclogite field.
+  for (let k = n - 1; k >= 0 && crust.thickness[i] - shed > cfg.delaminationFloor; k--) {
+    const type = crust.layerType[base + k];
+    if (type !== ROCK.ECLOGITE && type !== ROCK.AMPHIBOLITE && type !== ROCK.GABBRO) break;
+    const h = crust.layerThick[base + k];
+    const take = Math.min(h, crust.thickness[i] - shed - cfg.delaminationFloor);
+    if (take <= 1e-4) break;
+    shed += take;
+    shedCont += take * crust.layerFelsic[base + k];
+    crust.layerThick[base + k] = h - take;
+  }
+  if (shed <= 1e-4) return 0;
+  pruneColumn(crust, i);
+  // The root has gone into the mantle. It is genuinely leaving the model, so
+  // the ledger records it rather than pretending it went somewhere.
+  world.budget.destroyed += shed * pointArea;
+  world.delaminated = (world.delaminated || 0) + shed * pointArea;
+  return shed;
 }

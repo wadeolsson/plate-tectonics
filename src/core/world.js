@@ -18,6 +18,8 @@ import { MantleField } from '../sim/mantle.js';
 import { lithoTarget, updateLithosphere, smoothstep } from '../sim/elevation.js';
 import { initColumn } from '../sim/rocks.js';
 import { surfaceProcesses } from '../sim/surface.js';
+import { fluvialErosion } from '../sim/fluvial.js';
+import { volcanicEdifices } from '../sim/volcanoes.js';
 import { magmatism, meltVolume } from '../sim/magma.js';
 
 export class World {
@@ -209,6 +211,7 @@ export class World {
 
     mark('arcs', () => volcanicArcs(this));
     mark('hotspots', () => hotspotVolcanism(this));
+    mark('volcanoes', () => volcanicEdifices(this));
     mark('magma', () => magmatism(this));
     mark('transform', () => transformEffects(this));
     mark('slabs', () => updateSlabs(this));
@@ -218,6 +221,7 @@ export class World {
 
     mark('spread', () => gravitationalSpreading(this));
     mark('surface', () => surfaceProcesses(this));
+    mark('rivers', () => fluvialErosion(this));
     mark('litho', () => updateLithosphere(this));
     mark('weakness', () => decayWeakness(this));
     mark('quakes', () => generateQuakes(this));

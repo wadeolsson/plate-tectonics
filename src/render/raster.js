@@ -1,4 +1,4 @@
-import { elevationField, solveSeaLevel, waterVolume } from '../sim/elevation.js';
+import { elevationField, solveSeaLevel, waterVolume, elevationOf } from '../sim/elevation.js';
 import { heatFlowField, gravityFields, strainRateField } from '../sim/geophysics.js';
 import { topRock } from '../sim/rocks.js';
 
@@ -31,6 +31,10 @@ export class Raster {
     this.thickness = f32(); this.continental = f32(); this.age = f32();
     this.litho = f32(); this.weakness = f32(); this.stress = f32();
     this.defAge = f32();
+    this.edifice = f32();
+    // A second, much sharper elevation reconstruction, used ONLY for relief
+    // shading. See sharpenRelief().
+    this.elevSharp = f32();
     this.elevation = f32();
     // Derived from the rasterised fields, never splatted directly.
     this.heatFlow = f32(); this.bouguer = f32(); this.freeAir = f32();
@@ -90,7 +94,7 @@ export class Raster {
 
     this.thickness.fill(0); this.continental.fill(0); this.age.fill(0);
     this.litho.fill(0); this.weakness.fill(0); this.stress.fill(0);
-    this.defAge.fill(0);
+    this.defAge.fill(0); this.edifice.fill(0);
     this.wsum.fill(0); this.bestW.fill(0);
     this.plate.fill(-1); this.segment.fill(0); this.topRock.fill(-1);
 
@@ -108,6 +112,7 @@ export class Raster {
                       + Math.min(K.bins - 1, ((px - gx0) * K.bins) | 0)];
       const th = crust.thickness[i], co = crust.continental[i], ag = crust.age[i];
       const li = crust.litho[i], we = crust.weakness[i], da = crust.defAge[i];
+      const ed = crust.edifice[i];
       const st = sc.stress ? sc.stress[i] : 0;
       const pl = crust.plate[i], sg = crust.segment[i], tr = topRock(crust, i, cfg.bedrockVeneer);
       const ox = k.ox, oy = k.oy, wt_ = k.w, m = wt_.length;
@@ -118,6 +123,7 @@ export class Raster {
         const wt = wt_[q];
         this.thickness[c] += wt * th;
         this.continental[c] += wt * co;
+        this.edifice[c] += wt * ed;
         this.age[c] += wt * ag;
         this.litho[c] += wt * li;
         this.weakness[c] += wt * we;
@@ -138,10 +144,12 @@ export class Raster {
         this.thickness[c] *= inv; this.continental[c] *= inv; this.age[c] *= inv;
         this.litho[c] *= inv; this.weakness[c] *= inv; this.stress[c] *= inv;
         this.defAge[c] *= inv;
+        this.edifice[c] *= inv;
       } else {
         this.thickness[c] = cfg.thickOcean; this.continental[c] = 0;
         this.age[c] = 0; this.litho[c] = 10; this.weakness[c] = 0;
         this.defAge[c] = 0;
+        this.edifice[c] = 0;
       }
     }
 
@@ -170,7 +178,8 @@ export class Raster {
     // Everything derived comes LAST, from the smoothed raw fields. These are
     // all nonlinear in thickness, age and lithospheric depth, so interpolating
     // the results instead of the inputs would smear every boundary.
-    elevationField(cfg, this.thickness, this.continental, this.litho, this.age, this.elevation);
+    elevationField(cfg, this.thickness, this.continental, this.litho, this.age, this.elevation, this.edifice);
+    this.sharpenRelief();
     heatFlowField(cfg, this.litho, this.thickness, this.continental, this.heatFlow);
     gravityFields(cfg, this.thickness, this.continental, this.litho, this.age,
       this.elevation, this.bouguer, this.freeAir);
@@ -179,6 +188,87 @@ export class Raster {
     this.updateSeaLevel();
     this.boundaryDistance();
     return this;
+  }
+
+  // Relief shading wants a sharper surface than the colour map does.
+  //
+  // The main splat uses a Gaussian nearly one point-spacing wide, which is the
+  // right choice for colour: it hides the point cloud and gives clean, even
+  // fields. But it is a low-pass filter, and relief shading is a HIGH-pass
+  // operation -- it works on the derivative. Running the two off the same
+  // field means the hillshade is shading a surface whose detail has already
+  // been averaged out, and no amount of lighting recovers it.
+  //
+  // A narrower splat is not the answer either: a tight Gaussian turns every
+  // point into a visible disc, and at the vertical exaggeration relief shading
+  // needs, that stipple swamps the landscape. What is wanted is an
+  // INTERPOLANT, not a filter -- a surface that passes through every point
+  // exactly and is continuous between them. The Delaunay triangulation the
+  // simulation already maintains gives exactly that for free: shade the
+  // triangles, barycentrically. Nothing is invented and nothing is averaged.
+  sharpenRelief() {
+    const w = this.world;
+    const { cfg, crust } = w;
+    const td = w.td;
+    const { gw, gh, cw, ch, n } = this;
+    const out = this.elevSharp;
+    if (!td || !td.triangles) { out.set(this.elevation); return; }
+
+    // Per-point elevation, computed once.
+    const pe = this._pe && this._pe.length >= crust.n ? this._pe
+      : (this._pe = new Float32Array(crust.capacity));
+    for (let i = 0; i < crust.n; i++) {
+      pe[i] = crust.alive[i]
+        ? elevationOf(cfg, crust.thickness[i], crust.continental[i],
+          crust.litho[i], crust.age[i], crust.edifice[i])
+        : 0;
+    }
+
+    // Start from the smooth field so any cell no triangle covers still has a
+    // sensible value rather than a hole.
+    out.set(this.elevation);
+
+    const tri = td.triangles, coords = td.coords, orig = td.orig;
+    for (let t = 0; t < tri.length; t += 3) {
+      const a = tri[t], b = tri[t + 1], c = tri[t + 2];
+      const ax = coords[2 * a], ay = coords[2 * a + 1];
+      const bx = coords[2 * b], by = coords[2 * b + 1];
+      const cx2 = coords[2 * c], cy2 = coords[2 * c + 1];
+      const oa = orig[a], ob = orig[b], oc = orig[c];
+      if (!crust.alive[oa] || !crust.alive[ob] || !crust.alive[oc]) continue;
+      const za = pe[oa], zb = pe[ob], zc = pe[oc];
+
+      const det = (by - cy2) * (ax - cx2) + (cx2 - bx) * (ay - cy2);
+      if (det === 0 || !isFinite(det)) continue;
+      const inv = 1 / det;
+
+      // Skip the long slivers the ghost padding leaves at the fringe: they
+      // span the domain and would smear one point's elevation across it.
+      const span = Math.max(Math.abs(ax - bx), Math.abs(bx - cx2), Math.abs(ax - cx2));
+      const spanY = Math.max(Math.abs(ay - by), Math.abs(by - cy2), Math.abs(ay - cy2));
+      if (span > w.spacing * 6 || spanY > w.spacing * 6) continue;
+
+      const x0 = Math.floor(Math.min(ax, bx, cx2) / cw);
+      const x1 = Math.ceil(Math.max(ax, bx, cx2) / cw);
+      const y0 = Math.floor(Math.min(ay, by, cy2) / ch);
+      const y1 = Math.ceil(Math.max(ay, by, cy2) / ch);
+
+      for (let gy = y0; gy <= y1; gy++) {
+        const py = (gy + 0.5) * ch;
+        const wy = ((gy % gh) + gh) % gh;
+        for (let gx = x0; gx <= x1; gx++) {
+          const px = (gx + 0.5) * cw;
+          const l1 = ((by - cy2) * (px - cx2) + (cx2 - bx) * (py - cy2)) * inv;
+          if (l1 < 0 || l1 > 1) continue;
+          const l2 = ((cy2 - ay) * (px - cx2) + (ax - cx2) * (py - cy2)) * inv;
+          if (l2 < 0 || l2 > 1) continue;
+          const l3 = 1 - l1 - l2;
+          if (l3 < 0 || l3 > 1) continue;
+          const wx = ((gx % gw) + gw) % gw;
+          out[wy * gw + wx] = l1 * za + l2 * zb + l3 * zc;
+        }
+      }
+    }
   }
 
   // Total ocean water is fixed, so a world with a lot of young shallow seafloor

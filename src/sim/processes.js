@@ -687,6 +687,7 @@ export function transformEffects(world) {
 export function gravitationalSpreading(world) {
   const { cfg, crust, crustHash, pointArea } = world;
   if (!cfg.spreadEnabled) return;
+  world.collapseEvents = 0;
   const dt = cfg.dt;
   // Wide enough to see past a plateau. Flow is downhill only, and the interior
   // of a broad orogen has no local gradient at all, so a short reach leaves
@@ -699,7 +700,13 @@ export function gravitationalSpreading(world) {
   }
   for (const i of donors) {
     const excess = crust.thickness[i] - cfg.spreadThreshold;
-    const move = excess * Math.min(0.6, cfg.spreadRate * dt);
+    // Crustal strength falls off sharply with depth and temperature, both of
+    // which climb with thickness, so collapse is not linear in the excess --
+    // it runs away. Below the limit this is ordinary slow lower-crustal flow;
+    // above it the pile is actively failing under its own weight.
+    const over = Math.max(0, crust.thickness[i] - cfg.collapseThickness);
+    const rate = cfg.spreadRate * (1 + cfg.collapseGain * over * over);
+    const move = excess * Math.min(0.6, rate * dt);
     if (move < 1e-4) continue;
     const idx = [], wts = [];
     let wsum = 0;
@@ -715,7 +722,35 @@ export function gravitationalSpreading(world) {
       const w = drop * Math.exp(-d2 / (2 * (R * 0.5) * (R * 0.5))) * Math.exp(-dc * dc);
       idx.push(p); wts.push(w); wsum += w;
     });
-    if (wsum <= 0) continue;
+    // A collision thickens every point in the orogen at once, so in the
+    // interior NOBODY has a downhill neighbour and the gradient rule above
+    // finds nothing. That is how crust reaches 120 km here when the thickest
+    // on Earth is ~80: the pile has no way to shed. Real crust does not get
+    // the choice. Past roughly 60 km the lower crust is hot enough to flow,
+    // and the orogen's own weight drives it outward whether or not there is a
+    // local slope -- this is gravitational collapse, and it is what caps the
+    // Himalaya and spread the Basin and Range. So above that limit we fall
+    // back to pushing into the THINNEST neighbours regardless of gradient.
+    if (wsum <= 0) {
+      if (crust.thickness[i] < cfg.collapseThickness) continue;
+      let tmax = 0;
+      crustHash.forEachInRadius(crust.x[i], crust.y[i], R, (p) => {
+        if (!crust.alive[p] || p === i) return;
+        if (crust.plate[p] !== crust.plate[i]) return;
+        if (crust.thickness[p] > tmax) tmax = crust.thickness[p];
+      });
+      crustHash.forEachInRadius(crust.x[i], crust.y[i], R, (p, d2) => {
+        if (!crust.alive[p] || p === i) return;
+        if (crust.plate[p] !== crust.plate[i]) return;
+        const dc = (crust.continental[p] - crust.continental[i]) / 0.4;
+        const room = tmax - crust.thickness[p] + 1.0;   // +1 so a flat pile still flows
+        const w = room * Math.exp(-d2 / (2 * (R * 0.5) * (R * 0.5))) * Math.exp(-dc * dc);
+        if (w <= 0) return;
+        idx.push(p); wts.push(w); wsum += w;
+      });
+      if (wsum <= 0) continue;
+      world.collapseEvents = (world.collapseEvents || 0) + 1;
+    }
     const contFrac = crust.continental[i];
     const t0 = crust.thickness[i];
     if (t0 <= move) continue;
