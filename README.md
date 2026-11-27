@@ -7,6 +7,13 @@ volcanic arcs, collisional orogens and rift valleys — **none of which are draw
 directly**. All of it emerges from plate motion, boundary rules and a physical
 elevation model.
 
+![A world at 1,223 Myr with a trench-normal section cut through it: subducting slabs labelled by plate, a volcanic arc above them, and crustal horizons across the overriding plate](docs/hero-section-1223myr.jpg)
+
+*One run at 1,223 Myr. The section below the map is cut perpendicular to the
+nearest trench and is not an illustration — it is the simulation's own state,
+read out along that line: slabs labelled by the plate they came from, magma,
+crustal horizons, and the arc they feed.*
+
 ```
 node serve.mjs          # then open http://localhost:8181/
 ```
@@ -34,6 +41,38 @@ follows inherited weakness ([src/sim/rifting.js](src/sim/rifting.js)); continent
 collision welds two into one ([src/sim/processes.js](src/sim/processes.js)).
 Together they generate Wilson cycles without any code that knows what a
 supercontinent is.
+
+## What a run actually produces
+
+The same world, twice, from a single seed and nine starting plates:
+
+<table>
+<tr>
+<td width="50%"><img src="docs/world-700myr.jpg" width="100%"></td>
+<td width="50%"><img src="docs/world-1188myr.jpg" width="100%"></td>
+</tr>
+<tr>
+<td><sub><b>700 Myr</b> — down to 2 plates. A ridge/transform staircase runs
+north–south, a trench on the right has built a dense volcanic arc, and
+fracture zones comb the old seafloor.</sub></td>
+<td><sub><b>1,188 Myr</b> — back up to 3. Rivers drain the orogens, shelves
+have formed off every continent, and sea level has dropped 0.67 km as the
+ocean basins aged and deepened.</sub></td>
+</tr>
+</table>
+
+Nine plates became two and then three again. Nothing in the code knows what a
+supercontinent is: rifting splits a plate along a least-cost path through
+inherited weakness, collision welds two into one, and Wilson cycles are what
+those two rules do when left alone for a billion years. The events log records
+them as they happen — `plate 37 welded into 27`, `plate 5 rifted → 38 (cut
+weakness 0.79)`.
+
+The diagnostics panel carries a mass ledger: crust plus slab against every
+source and sink, reported as a conservation error. It sits at −0.012 % after a
+billion years. A figure that creeps above a fraction of a percent means a
+process is leaking, which is the fastest way to find a bug in a simulation
+where everything is supposed to be emergent.
 
 ## Layout
 
